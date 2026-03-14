@@ -1,5 +1,5 @@
 ---
-title: "Welcome"
+title: "Dhwanika's Project"
 ---
 
 Hi! I’m Dhwanika Narang. This site will contain my STA 9750 mini-project submissions.
