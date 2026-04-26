@@ -1,0 +1,1366 @@
+---
+title: "Mini-Project #03: Who Goes There? US Internal Migration and New York's Fight to Keep Its Seats"
+author: "Dhwanika Narang"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    code-fold: true
+    code-tools: true
+    code-summary: "Show Code"
+    theme: cosmo
+    embed-resources: true
+    fig-width: 9
+    fig-height: 6
+    fig-cap-location: bottom
+execute:
+  cache: true
+  warning: false
+  message: false
+---
+
+## Introduction
+
+I grew up on Long Island,Melville, to be specific and I've spent most of my life watching people leave. Teachers retiring to Florida,cousins following tech jobs to Austin.Family friends priced out of Suffolk County and resettling in the Carolinas. For as long as I can remember, New York has been a state people move *through* rather than move *to*: a gateway that opens outward as much as it pulls inward.
+
+This project gave me a data-driven reason to finally look at that pattern closely. Using American Community Survey migration flow data and a simple population projection model, I'll examine where New Yorkers are going, who's coming to take their place, and what our state's congressional delegation might look like after the 2030 census. And then wearing the hat of a policy analyst advising the Governor, I'll make the case for how New York could win back some of those seats, and the people behind them.
+
+The analysis unfolds in four parts: data acquisition and cleaning, exploratory analysis, a population forecasting model, and a policy recommendation for an advertising strategy targeting key migration corridors. I've also tackled each of the four extra credit opportunities.
+
+---
+
+## Setup and Libraries
+
+```{r}
+#| label: setup
+#| message: false
+#| warning: false
+
+library(tidyverse)
+library(tidycensus)
+library(readxl)
+library(jsonlite)
+library(gt)
+library(gtExtras)
+library(fs)
+library(sf)
+library(ggplot2)
+library(ggraph)
+library(igraph)
+library(scales)
+library(patchwork)
+library(viridis)
+library(glue)
+library(vctrs)
+
+DATA_DIR <- fs::path("data", "mp03")
+if (!fs::dir_exists(DATA_DIR)) fs::dir_create(DATA_DIR, recurse = TRUE)
+
+MY_STATE     <- "New York"
+MY_STATE_ABB <- "NY"
+MY_METRO     <- "New York-Newark-Jersey City, NY-NJ-PA Metro Area"
+N_DISTRICTS  <- 435L
+
+theme_nika <- function(...) {
+  theme_minimal(base_size = 12) +
+    theme(
+      plot.title       = element_text(face = "bold", size = 14),
+      plot.subtitle    = element_text(color = "grey40", size = 11),
+      plot.caption     = element_text(color = "grey55", size = 9, hjust = 0),
+      panel.grid.minor = element_blank(),
+      legend.position  = "bottom",
+      ...
+    )
+}
+```
+
+---
+
+## Part I: Data Acquisition
+
+### Task 1: State Population via `tidycensus`
+
+```{r}
+#| label: task1-pop
+
+get_state_pop_year <- function(yr) {
+  get_acs(
+    variables   = c(total_population = "B01003_001"),
+    geography   = "state",
+    year        = yr,
+    survey      = "acs1",
+    geometry    = TRUE,
+    cache_table = TRUE
+  ) |>
+    mutate(year = yr) |>
+    select(state = NAME, GEOID, population = estimate, year, geometry)
+}
+
+# Skip 2020 — ACS-1 not released due to COVID
+state_pop_raw <- map(c(2015:2019, 2021:2024), get_state_pop_year) |>
+  bind_rows()
+
+state_pop <- state_pop_raw |>
+  st_drop_geometry() |>
+  filter(!state %in% c("Puerto Rico"))
+
+state_pop_geo <- state_pop_raw |>
+  filter(year == 2024, !state %in% c("Puerto Rico"))
+
+cat(glue(
+  "State population data: {nrow(state_pop)} rows across ",
+  "{n_distinct(state_pop$year)} years.\n"
+))
+```
+
+```{r}
+#| label: task1-check
+
+state_pop |>
+  filter(state == MY_STATE) |>
+  arrange(year) |>
+  select(year, population) |>
+  gt() |>
+  cols_label(year = "Year", population = "NY Population (ACS-1)") |>
+  fmt_integer(population) |>
+  tab_header("New York State Population, 2015-2024 (excl. 2020)") |>
+  tab_source_note("Source: US Census Bureau ACS-1, Table B01003.")
+```
+
+New York hovered between 19.5 and 20.5 million across this decade, modest growth compared to Sun Belt states.
+
+---
+
+### Task 2: State-to-State Migration Flows: 2024
+
+The 2024 Census T13 file is in **long format** (4 columns: current state name, prior state name, estimate, MOE). The function below parses it directly.
+
+```{r}
+#| label: task2-setup
+
+URL_2024  <- paste0(
+  "https://www2.census.gov/programs-surveys/demo/tables/geographic-mobility/2024/",
+  "state-to-state-migration/State_to_State_Migration_Table_2024_T13.xlsx"
+)
+FILE_2024 <- fs::path(DATA_DIR, "migration_2024.xlsx")
+
+if (!fs::file_exists(FILE_2024)) {
+  download.file(URL_2024, destfile = FILE_2024, mode = "wb", quiet = TRUE)
+  tryCatch(
+    readxl::excel_sheets(FILE_2024),
+    error = function(e) {
+      message("Standard download failed, retrying with httr2...")
+      library(httr2)
+      request(URL_2024) |>
+        req_headers("User-Agent" = "Mozilla/5.0") |>
+        req_perform() |>
+        resp_body_raw() |>
+        writeBin(FILE_2024)
+    }
+  )
+  message("2024 migration file ready.")
+}
+```
+
+```{r}
+#| label: task2-function
+
+name_to_abb <- c(
+  setNames(state.abb, state.name),
+  "District of Columbia" = "DC",
+  "Puerto Rico"          = "PR"
+)
+
+state_to_state_migration_2024 <- function() {
+
+  raw <- read_excel(FILE_2024, sheet = "Table",
+                    skip = 8, col_names = FALSE)
+  names(raw) <- c("state_current_name", "state_1y_name", "population", "moe")
+
+  flows_long <- raw |>
+    filter(population != "X") |>
+    mutate(
+      state_current = name_to_abb[state_current_name],
+      state_1y = case_when(
+        state_1y_name %in% names(name_to_abb) ~ name_to_abb[state_1y_name],
+        str_detect(tolower(state_1y_name),
+                   "abroad|foreign|island|puerto|territory") ~ "Abroad",
+        TRUE ~ NA_character_
+      ),
+      population   = if_else(is.na(population) | population == "N",
+                             "0", as.character(population)) |> as.integer(),
+      year_current = 2024L,
+      year_1y      = 2023L
+    ) |>
+    filter(!is.na(state_current), !is.na(state_1y),
+           state_current %in% state.abb,
+           state_1y %in% c(state.abb, "Abroad")) |>
+    select(state_current, state_1y, population, year_current, year_1y)
+
+  supp_raw <- read_excel(FILE_2024,
+                         sheet = "Supplemental - Current Res",
+                         skip = 5, col_names = FALSE)
+
+  supp_clean <- supp_raw |>
+    select(state_current_name = 2, stayed_state = 4, stayed_county = 5) |>
+    filter(state_current_name %in% state.name) |>
+    mutate(
+      state_current = name_to_abb[state_current_name],
+      stayed_state  = if_else(is.na(stayed_state) |
+                                as.character(stayed_state) == "N",
+                              "0", as.character(stayed_state)),
+      stayed_county = if_else(is.na(stayed_county) |
+                                as.character(stayed_county) == "N",
+                              "0", as.character(stayed_county)),
+      population    = as.integer(stayed_state) + as.integer(stayed_county),
+      state_1y      = state_current,
+      year_current  = 2024L,
+      year_1y       = 2023L
+    ) |>
+    filter(!is.na(state_current)) |>
+    select(state_current, state_1y, population, year_current, year_1y)
+
+  bind_rows(supp_clean, flows_long)
+}
+
+migration_2024 <- state_to_state_migration_2024()
+
+cat(glue(
+  "2024 migration: {nrow(migration_2024)} rows, ",
+  "{n_distinct(migration_2024$state_current)} states.\n"
+))
+```
+
+```{r}
+#| label: task2-preview
+
+migration_2024 |>
+  filter(state_current == "AL") |>
+  arrange(desc(population)) |>
+  slice_head(n = 5) |>
+  gt() |>
+  cols_label(state_current = "Current State", state_1y = "State 1yr Ago",
+             population = "Population", year_current = "Year",
+             year_1y = "Prior Year") |>
+  fmt_integer(population) |>
+  tab_header("Sample: Alabama Rows from 2024 Migration Table") |>
+  tab_source_note("Source: US Census Bureau, 2024 State-to-State Migration Table.")
+```
+
+---
+
+### Task 3: State-to-State Migration Flows : 2023
+
+```{r}
+#| label: task3
+
+URL_2023  <- paste0(
+  "https://www2.census.gov/programs-surveys/demo/tables/geographic-mobility/2023/",
+  "state-to-state-migration/State_to_State_Migration_Table_2023_T13.xlsx"
+)
+FILE_2023 <- fs::path(DATA_DIR, "migration_2023.xlsx")
+
+if (!fs::file_exists(FILE_2023)) {
+  download.file(URL_2023, destfile = FILE_2023, mode = "wb", quiet = TRUE)
+  message("Downloaded 2023 migration file.")
+}
+
+state_to_state_migration_2023 <- function() {
+
+  states_with_dc <- c(state.name[1:8], "District of Columbia", state.name[9:50])
+
+  # Part A: stayed-in-state totals
+  stayed_raw <- read_excel(
+    FILE_2023, range = "A8:F61",
+    col_names = c("state_name", "x1", "x2", "x3", "stayed_state", "stayed_county")
+  )
+
+  stayed_clean <- stayed_raw |>
+    filter(state_name %in% state.name) |>
+    mutate(
+      state_current = state.abb[match(state_name, state.name)],
+      stayed_state  = if_else(is.na(stayed_state) |
+                                as.character(stayed_state) == "N",
+                              "0", as.character(stayed_state)),
+      stayed_county = if_else(is.na(stayed_county) |
+                                as.character(stayed_county) == "N",
+                              "0", as.character(stayed_county)),
+      population    = as.integer(stayed_state) + as.integer(stayed_county),
+      state_1y      = state_current,
+      year_current  = 2023L,
+      year_1y       = 2022L
+    ) |>
+    select(state_current, state_1y, population, year_current, year_1y)
+
+  # Part B: cross-state flows
+  flow_col_names <- vctrs::vec_interleave(states_with_dc, NA_character_)
+
+  flows_raw <- read_excel(FILE_2023, range = "J8:DG61",
+                           col_names = flow_col_names)
+
+  flows_long <- flows_raw |>
+    select(any_of(states_with_dc)) |>
+    slice(seq_len(length(states_with_dc))) |>
+    mutate(state_to_name = states_with_dc) |>
+    pivot_longer(cols = -state_to_name,
+                 names_to = "state_from_name", values_to = "population") |>
+    filter(
+      state_to_name   != "District of Columbia",
+      state_from_name != "District of Columbia",
+      state_to_name   != state_from_name,
+      !is.na(population)
+    ) |>
+    mutate(
+      state_current = state.abb[match(state_to_name,   state.name)],
+      state_1y      = state.abb[match(state_from_name, state.name)],
+      population    = if_else(as.character(population) == "N", "0",
+                               as.character(population)) |> as.integer(),
+      year_current  = 2023L,
+      year_1y       = 2022L
+    ) |>
+    filter(!is.na(state_current), !is.na(state_1y)) |>
+    select(state_current, state_1y, population, year_current, year_1y)
+
+  # Part C: abroad totals — read state name col + DH col together to match rows
+  abroad_clean <- read_excel(FILE_2023, range = "A8:A61",
+                              col_names = "state_name") |>
+    bind_cols(
+      read_excel(FILE_2023, range = "DH8:DH61", col_names = "abroad_total")
+    ) |>
+    filter(state_name %in% state.name) |>
+    mutate(
+      state_current = state.abb[match(state_name, state.name)],
+      abroad_total  = if_else(is.na(abroad_total) |
+                                as.character(abroad_total) == "N",
+                              "0", as.character(abroad_total)),
+      population    = as.integer(abroad_total),
+      state_1y      = "Abroad",
+      year_current  = 2023L,
+      year_1y       = 2022L
+    ) |>
+    select(state_current, state_1y, population, year_current, year_1y)
+
+  bind_rows(stayed_clean, flows_long, abroad_clean)
+}
+
+migration_2023 <- state_to_state_migration_2023()
+
+cat(glue("2023 migration: {nrow(migration_2023)} rows.\n"))
+```
+
+---
+
+### Task 4: Combined State-to-State Migration
+
+```{r}
+#| label: task4
+
+state_to_state_migration <- function() {
+  bind_rows(state_to_state_migration_2024(), state_to_state_migration_2023())
+}
+
+migration_all <- state_to_state_migration()
+
+cat(glue("Combined: {nrow(migration_all)} rows x {ncol(migration_all)} columns.\n"))
+
+migration_all |>
+  filter(state_current == "AL", state_1y %in% c("AL", "AK"),
+         year_current == 2024) |>
+  gt() |>
+  fmt_integer(population) |>
+  tab_header("Spot-Check: Alabama Rows, 2024") |>
+  tab_source_note("AL-AL expected ~4,960,560; AL-AK expected ~387.")
+```
+
+---
+
+### Task 5: Metro-to-Metro Migration via the Census Flows API
+
+```{r}
+#| label: task5
+
+METRO_JSON <- fs::path(DATA_DIR, "metro_flows.json")
+METRO_URL  <- paste0(
+  "https://api.census.gov/data/2020/acs/flows",
+  "?get=MOVEDIN,MOVEDOUT,FULL1_NAME,FULL2_NAME",
+  "&for=metropolitan%20statistical%20area/micropolitan%20statistical%20area:*"
+)
+
+if (!fs::file_exists(METRO_JSON)) {
+  download.file(METRO_URL, destfile = METRO_JSON, quiet = TRUE)
+  message("Downloaded metro-to-metro migration JSON.")
+}
+
+move_row_to_colnames <- function(X, row = 1) {
+  X <- as_tibble(X, .name_repair = "unique")
+  Xrow <- X[row, ]
+  X <- X[-row, ]
+  colnames(X) <- Xrow
+  readr::type_convert(X)
+}
+
+pull_state_from_metro <- function(metro_name) {
+  str_extract(metro_name, ".*, (\\S{2})[-[:alpha:]]* Metro Area", group = 1)
+}
+
+metro_flows <- read_json(METRO_JSON, simplifyVector = TRUE) |>
+  as_tibble() |>
+  move_row_to_colnames() |>
+  rename(
+    moved_in  = MOVEDIN,
+    moved_out = MOVEDOUT,
+    metro1    = FULL1_NAME,
+    metro2    = FULL2_NAME
+  ) |>
+  select(metro1, metro2, moved_in, moved_out) |>
+  mutate(
+    metro1_state = pull_state_from_metro(metro1),
+    metro2_state = pull_state_from_metro(metro2),
+    moved_in     = as.integer(moved_in),
+    moved_out    = as.integer(moved_out)
+  ) |>
+  filter(!is.na(metro1_state), !is.na(metro2_state))
+
+cat(glue("Metro flows: {nrow(metro_flows)} metro-pair observations.\n"))
+```
+
+---
+
+## Part II: Exploratory Data Analysis
+
+### Task 6: Ten Questions on US Migration
+
+#### Q1: Fastest-growing states over the past decade?
+
+```{r}
+#| label: eda-q1
+
+growth_decade <- state_pop |>
+  filter(year %in% c(2015, 2024)) |>
+  pivot_wider(names_from = year, values_from = population,
+              names_prefix = "pop_") |>
+  mutate(
+    net_growth  = pop_2024 - pop_2015,
+    growth_rate = (pop_2024 - pop_2015) / pop_2015
+  ) |>
+  arrange(desc(growth_rate))
+
+growth_decade |>
+  slice_head(n = 10) |>
+  select(state, pop_2015, pop_2024, net_growth, growth_rate) |>
+  gt() |>
+  cols_label(state = "State", pop_2015 = "2015 Pop", pop_2024 = "2024 Pop",
+             net_growth = "Net Growth", growth_rate = "Growth Rate") |>
+  fmt_integer(c(pop_2015, pop_2024, net_growth)) |>
+  fmt_percent(growth_rate, decimals = 1) |>
+  data_color(columns = growth_rate, palette = "Greens") |>
+  tab_header("Top 10 Fastest-Growing States, 2015-2024") |>
+  tab_source_note("Source: US Census Bureau ACS-1, Table B01003.")
+```
+
+The Sun Belt dominates Montana, Idaho, Utah, and Florida all posted double-digit growth. New York grew under 2% over the entire decade.
+
+#### Q2: Where do NY newcomers come from, and where do New Yorkers go?
+
+```{r}
+#| label: eda-q2
+
+ny_inbound <- migration_all |>
+  filter(state_current == MY_STATE_ABB, state_1y != MY_STATE_ABB,
+         state_1y != "Abroad", year_current == 2024) |>
+  arrange(desc(population)) |> slice_head(n = 10)
+
+ny_outbound <- migration_all |>
+  filter(state_1y == MY_STATE_ABB, state_current != MY_STATE_ABB,
+         year_current == 2024) |>
+  arrange(desc(population)) |> slice_head(n = 10)
+
+p_in <- ggplot(ny_inbound,
+               aes(fct_reorder(state_1y, population), population)) +
+  geom_col(fill = "#2c7bb6") + coord_flip() +
+  scale_y_continuous(labels = comma) +
+  labs(title = "Top Origins of NY In-Migrants (2024)",
+       subtitle = "People in NY in 2024 who lived elsewhere in 2023",
+       x = NULL, y = "Movers") + theme_nika()
+
+p_out <- ggplot(ny_outbound,
+                aes(fct_reorder(state_current, population), population)) +
+  geom_col(fill = "#d7191c") + coord_flip() +
+  scale_y_continuous(labels = comma) +
+  labs(title = "Top Destinations of NY Out-Migrants (2024)",
+       subtitle = "People who left NY between 2023 and 2024",
+       x = NULL, y = "Movers") + theme_nika()
+
+p_in / p_out +
+  plot_annotation(
+    caption = "Source: US Census Bureau, 2024 State-to-State Migration Table."
+  )
+```
+
+New Jersey and Florida lead both lists. Florida is politically significant: it absorbs New York retirees without sending them back,a direct congressional seat transfer.
+
+#### Q3: Where do NYC metro newcomers come from, and where do city-leavers go?
+
+```{r}
+#| label: eda-q3
+
+nyc_in <- metro_flows |>
+  filter(metro1 == MY_METRO, metro2 != MY_METRO, !is.na(moved_in)) |>
+  arrange(desc(moved_in)) |> slice_head(n = 10)
+
+nyc_out <- metro_flows |>
+  filter(metro1 == MY_METRO, metro2 != MY_METRO, !is.na(moved_out)) |>
+  arrange(desc(moved_out)) |> slice_head(n = 10)
+
+p1 <- ggplot(nyc_in,
+             aes(fct_reorder(str_trunc(metro2, 38), moved_in), moved_in)) +
+  geom_col(fill = "#1a9641") + coord_flip() +
+  scale_y_continuous(labels = comma) +
+  labs(title = "Top Origins - NYC Metro In-Migrants",
+       subtitle = "ACS-5 (2016-2020)", x = NULL, y = "Movers into NYC") +
+  theme_nika()
+
+p2 <- ggplot(nyc_out,
+             aes(fct_reorder(str_trunc(metro2, 38), moved_out), moved_out)) +
+  geom_col(fill = "#e66101") + coord_flip() +
+  scale_y_continuous(labels = comma) +
+  labs(title = "Top Destinations - NYC Metro Out-Migrants",
+       subtitle = "ACS-5 (2016-2020)", x = NULL, y = "Movers out of NYC") +
+  theme_nika()
+
+p1 / p2 + plot_annotation(caption = "Source: US Census Bureau ACS Flows API.")
+```
+
+#### Q4: States with highest in/out/net migration?
+
+```{r}
+#| label: eda-q4
+
+state_inmig <- migration_all |>
+  filter(year_current == 2024, state_1y != state_current,
+         state_1y != "Abroad") |>
+  group_by(state = state_current) |>
+  summarise(total_in = sum(population, na.rm = TRUE), .groups = "drop")
+
+state_outmig <- migration_all |>
+  filter(year_current == 2024, state_1y != state_current,
+         state_1y %in% state.abb) |>
+  group_by(state = state_1y) |>
+  summarise(total_out = sum(population, na.rm = TRUE), .groups = "drop")
+
+state_net <- left_join(state_inmig, state_outmig, by = "state") |>
+  mutate(net = total_in - total_out)
+
+state_net |>
+  arrange(desc(net)) |>
+  slice(c(1:5, (n() - 4):n())) |>
+  gt() |>
+  cols_label(state = "State", total_in = "In-Migration",
+             total_out = "Out-Migration", net = "Net") |>
+  fmt_integer(c(total_in, total_out, net)) |>
+  data_color(columns = net, palette = "RdYlGn") |>
+  tab_header("States by Net Internal Migration (2024)",
+             subtitle = "Top 5 gainers and bottom 5 losers") |>
+  tab_source_note("Source: US Census Bureau, 2024 State-to-State Migration Table.")
+```
+
+#### Q5: Metro areas with highest migration flows?
+
+```{r}
+#| label: eda-q5
+
+metro_flows |>
+  group_by(metro = metro1) |>
+  summarise(total_in  = sum(moved_in,  na.rm = TRUE),
+            total_out = sum(moved_out, na.rm = TRUE),
+            net       = total_in - total_out, .groups = "drop") |>
+  filter(!str_detect(metro, "Outside Metro")) |>
+  arrange(desc(total_in)) |>
+  slice_head(n = 10) |>
+  mutate(metro = str_trunc(metro, 48)) |>
+  gt() |>
+  cols_label(metro = "Metro Area", total_in = "In-Migrants",
+             total_out = "Out-Migrants", net = "Net") |>
+  fmt_integer(c(total_in, total_out, net)) |>
+  data_color(columns = net, palette = "RdYlGn") |>
+  tab_header("Top 10 Metro Areas by In-Migration (ACS-5, 2016-2020)") |>
+  tab_source_note("Source: US Census Bureau ACS Flows API.")
+```
+
+#### Q6: States with lowest proportional in-migration?
+
+```{r}
+#| label: eda-q6
+state_inmig |>
+  left_join(
+    state_pop |> filter(year == 2024) |>
+      mutate(state = state.abb[match(state, state.name)]) |>
+      filter(!is.na(state)),
+    by = "state"
+  ) |>
+
+  mutate(frac_stable = 1 - total_in / population) |>
+  arrange(desc(frac_stable)) |>
+  slice_head(n = 10) |>
+  select(state, population, total_in, frac_stable) |>
+  gt() |>
+  cols_label(state = "State", population = "2024 Pop",
+             total_in = "In-Migrants", frac_stable = "Fraction Stable") |>
+  fmt_integer(c(population, total_in)) |>
+  fmt_percent(frac_stable, decimals = 1) |>
+  data_color(columns = frac_stable, palette = "Blues") |>
+  tab_header("States with Lowest Proportional In-Migration (2024)") |>
+  tab_source_note("Source: US Census Bureau, 2024 State-to-State Migration Table.")
+```
+
+Despite its reputation as a revolving door, most NY residents stay put, it's the outflow, not low inflow, that creates the net-negative picture.
+
+#### Q7: What fraction of growth comes from net migration?
+
+```{r}
+#| label: eda-q7
+
+state_pop |>
+  filter(year %in% c(2023, 2024)) |>
+  pivot_wider(names_from = year, values_from = population,
+              names_prefix = "pop_") |>
+  mutate(total_growth = pop_2024 - pop_2023) |>
+  left_join(state_net, by = "state") |>
+  mutate(frac = net / total_growth) |>
+  filter(!is.na(frac), is.finite(frac)) |>
+  arrange(desc(frac)) |>
+  slice_head(n = 10) |>
+  select(state, total_growth, net, frac) |>
+  gt() |>
+  cols_label(state = "State", total_growth = "Total Growth",
+             net = "Net Migration", frac = "Migration Share") |>
+  fmt_integer(c(total_growth, net)) |>
+  fmt_percent(frac, decimals = 0) |>
+  data_color(columns = frac, palette = "Greens") |>
+  tab_header("States Where Internal Migration Drives Population Growth") |>
+  tab_source_note("Source: ACS-1 + 2024 Migration Tables.")
+```
+
+#### Q8: New York-specific patterns
+
+```{r}
+#| label: eda-q8
+
+ny_top_src <- migration_all |>
+  filter(state_current == MY_STATE_ABB, state_1y != MY_STATE_ABB,
+         state_1y != "Abroad", year_current == 2024) |>
+  slice_max(population, n = 1)
+
+ny_top_dst <- migration_all |>
+  filter(state_1y == MY_STATE_ABB, state_current != MY_STATE_ABB,
+         year_current == 2024) |>
+  slice_max(population, n = 1)
+
+cat(glue(
+  "Top in-migration source: {ny_top_src$state_1y} ",
+  "({comma(ny_top_src$population)} people).\n",
+  "Top destination for leavers: {ny_top_dst$state_current} ",
+  "({comma(ny_top_dst$population)} people).\n"
+))
+```
+
+```{r}
+#| label: eda-q8b
+
+bind_rows(
+  migration_all |>
+    filter(state_current == MY_STATE_ABB, state_1y != MY_STATE_ABB,
+           state_1y != "Abroad", year_current == 2024) |>
+    arrange(desc(population)) |> slice_head(n = 5) |>
+    mutate(direction = "Into New York", partner = state_1y),
+  migration_all |>
+    filter(state_1y == MY_STATE_ABB, state_current != MY_STATE_ABB,
+           year_current == 2024) |>
+    arrange(desc(population)) |> slice_head(n = 5) |>
+    mutate(direction = "Out of New York", partner = state_current)
+) |>
+  select(direction, partner, population) |>
+  gt(groupname_col = "direction") |>
+  cols_label(partner = "Partner State", population = "Movers") |>
+  fmt_integer(population) |>
+  tab_header("New York's Top Migration Partners, 2024") |>
+  tab_source_note("Source: US Census Bureau, 2024 State-to-State Migration Table.")
+```
+
+#### Q9: NYC metro: top out-of-state connections
+
+```{r}
+#| label: eda-q9
+
+bind_rows(
+  metro_flows |>
+    filter(metro1 == MY_METRO, metro2 != MY_METRO,
+           !str_detect(metro2, "Outside"), !is.na(moved_in),
+           metro2_state != MY_STATE_ABB) |>
+    arrange(desc(moved_in)) |> slice_head(n = 5) |>
+    mutate(direction = "Into NYC (from out-of-state)", partner = metro2),
+  metro_flows |>
+    filter(metro1 == MY_METRO, metro2 != MY_METRO,
+           !str_detect(metro2, "Outside"), !is.na(moved_out),
+           metro2_state != MY_STATE_ABB) |>
+    arrange(desc(moved_out)) |> slice_head(n = 5) |>
+    mutate(direction = "Out of NYC (to out-of-state)", partner = metro2)
+) |>
+  select(direction, partner, moved_in, moved_out) |>
+  gt(groupname_col = "direction") |>
+  cols_label(partner = "Metro Area", moved_in = "Into NYC",
+             moved_out = "Out of NYC") |>
+  fmt_integer(c(moved_in, moved_out)) |>
+  tab_header("NYC Metro's Top Out-of-State Connections (ACS-5, 2016-2020)") |>
+  tab_source_note("Source: US Census Bureau ACS Flows API.")
+```
+
+#### Q10: Metros where NYC dominates in-migration
+
+```{r}
+#| label: eda-q10
+
+dest_totals <- metro_flows |>
+  group_by(metro = metro2) |>
+  summarise(total_in_dest = sum(moved_in, na.rm = TRUE), .groups = "drop")
+
+metro_flows |>
+  filter(metro1 == MY_METRO, !str_detect(metro2, "Outside"),
+         !is.na(moved_out), metro2_state != MY_STATE_ABB) |>
+  left_join(dest_totals, by = c("metro2" = "metro")) |>
+  mutate(nyc_share = moved_out / total_in_dest) |>
+  filter(total_in_dest > 5000) |>
+  arrange(desc(nyc_share)) |>
+  slice_head(n = 10) |>
+  mutate(metro2 = str_trunc(metro2, 45)) |>
+  select(metro2, moved_out, total_in_dest, nyc_share) |>
+  gt() |>
+  cols_label(metro2 = "Destination Metro", moved_out = "From NYC",
+             total_in_dest = "Total In-Migrants", nyc_share = "NYC Share") |>
+  fmt_integer(c(moved_out, total_in_dest)) |>
+  fmt_percent(nyc_share, decimals = 1) |>
+  data_color(columns = nyc_share, palette = "YlOrRd") |>
+  tab_header("Metros Where NYC Dominates In-Migration Flow") |>
+  tab_source_note("Source: ACS Flows API. Metros with >5,000 in-migrants shown.")
+```
+
+These corridors are exactly where we can target a return-migration campaign.
+
+---
+
+## Part III: Population Projections
+
+### Task 7: Fitting the Gravity Model
+
+$$P_i^{(t+1)} = P_i^{(t)}(1 + \bar{g}) + \sum_j m_{j \to i} \sqrt{P_i^{(t)} P_j^{(t)}}$$
+
+```{r}
+#| label: task7-params
+
+fit_model_params <- function(mig_data, pop_data, yr_current, yr_prior) {
+
+  pop_cur <- pop_data |> filter(year == yr_current) |>
+    mutate(s = state.abb[match(state, state.name)]) |>
+    filter(!is.na(s)) |> select(state = s, pop_t1 = population)
+
+  pop_prev <- pop_data |> filter(year == yr_prior) |>
+    mutate(s = state.abb[match(state, state.name)]) |>
+    filter(!is.na(s)) |> select(state = s, pop_t = population)
+
+  M_intl <- mig_data |>
+    filter(year_current == yr_current, state_1y == "Abroad") |>
+    summarise(M = sum(population, na.rm = TRUE)) |> pull(M)
+
+  g_bar <- (sum(pop_cur$pop_t1) - sum(pop_prev$pop_t) - M_intl) /
+           sum(pop_prev$pop_t)
+
+  m_ij <- mig_data |>
+    filter(year_current == yr_current,
+           state_1y != state_current, state_1y != "Abroad",
+           state_1y %in% state.abb, state_current %in% state.abb) |>
+    select(state_i = state_current, state_j = state_1y, M_ji = population) |>
+    left_join(pop_prev |> rename(state_i = state, pop_i = pop_t),
+              by = "state_i") |>
+    left_join(pop_prev |> rename(state_j = state, pop_j = pop_t),
+              by = "state_j") |>
+    mutate(m_ji = M_ji / sqrt(pop_i * pop_j)) |>
+    select(state_i, state_j, m_ji)
+
+  list(g_bar = g_bar, m_ij = m_ij, pop_cur = pop_cur)
+}
+
+params_2024 <- fit_model_params(migration_all, state_pop, 2024, 2023)
+params_2023 <- fit_model_params(migration_all, state_pop, 2023, 2022)
+
+g_bar_avg <- (params_2024$g_bar + params_2023$g_bar) / 2
+
+m_ij_avg <- bind_rows(
+  params_2024$m_ij |> mutate(yr = 2024),
+  params_2023$m_ij |> mutate(yr = 2023)
+) |>
+  group_by(state_i, state_j) |>
+  summarise(m_ji = mean(m_ji, na.rm = TRUE), .groups = "drop")
+
+cat(glue(
+  "Avg g-bar: {percent(g_bar_avg, accuracy = 0.01)} | ",
+  "2024: {percent(params_2024$g_bar, accuracy = 0.01)} | ",
+  "2023: {percent(params_2023$g_bar, accuracy = 0.01)}\n"
+))
+```
+
+```{r}
+#| label: task7-project
+
+project_one_year <- function(pop_now, m_ij, g_bar) {
+  pop_now <- pop_now |> rename(state_i = state, pop_t = pop_t1)
+
+  mig_in <- m_ij |>
+    left_join(pop_now |> select(state_i, pop_i = pop_t), by = "state_i") |>
+    left_join(pop_now |> rename(state_j = state_i, pop_j = pop_t),
+              by = "state_j") |>
+    mutate(flow = m_ji * sqrt(pop_i * pop_j)) |>
+    group_by(state_i) |>
+    summarise(mig_in = sum(flow, na.rm = TRUE), .groups = "drop")
+
+  pop_now |>
+    left_join(mig_in, by = "state_i") |>
+    mutate(pop_t1 = pop_t * (1 + g_bar) + replace_na(mig_in, 0)) |>
+    select(state = state_i, pop_t1)
+}
+
+current_pop <- state_pop |>
+  filter(year == 2024) |>
+  mutate(s = state.abb[match(state, state.name)]) |>
+  filter(!is.na(s)) |>
+  select(state = s, pop_t1 = population)
+
+projections <- list()
+pop_iter <- current_pop
+
+for (yr in 2025:2030) {
+  pop_iter <- project_one_year(pop_iter, m_ij_avg, g_bar_avg)
+  projections[[as.character(yr)]] <- pop_iter |> mutate(year = yr)
+}
+
+pop_forecast <- bind_rows(projections)
+
+pop_forecast |>
+  filter(state == MY_STATE_ABB) |>
+  select(year, pop_t1) |>
+  gt() |>
+  cols_label(year = "Year", pop_t1 = "Projected Population") |>
+  fmt_integer(pop_t1) |>
+  tab_header("New York State Projected Population, 2025-2030") |>
+  tab_source_note("Source: Author's gravity model projections.")
+```
+
+```{r}
+#| label: task7-viz
+
+pop_2024_actual <- state_pop |>
+  filter(year == 2024) |>
+  mutate(state = state.abb[match(state, state.name)]) |>
+  filter(!is.na(state)) |>
+  select(state, pop_t1 = population) |>
+  mutate(year = 2024)
+
+bind_rows(pop_2024_actual, pop_forecast) |>
+  filter(state %in% c("NY", "FL", "TX", "CA", "PA")) |>
+  mutate(label = recode(state, NY = "New York", FL = "Florida",
+                        TX = "Texas", CA = "California",
+                        PA = "Pennsylvania")) |>
+  ggplot(aes(year, pop_t1, color = label, group = label)) +
+  geom_line(linewidth = 1.2) + geom_point(size = 2.5) +
+  scale_y_continuous(labels = label_number(scale = 1e-6, suffix = "M")) +
+  scale_color_viridis_d(option = "turbo") +
+  labs(title = "Projected State Populations, 2024-2030",
+       subtitle = "Gravity model with averaged 2023-2024 ACS parameters",
+       x = "Year", y = "Population", color = "State",
+       caption = "Source: Author's projections. Constant migration rates assumed.") +
+  theme_nika()
+```
+
+---
+
+### Task 8: Congressional Reapportionment via Huntington-Hill
+
+```{r}
+#| label: task8
+
+huntington_hill <- function(pop_df, n = 435L, max_seats = 100L) {
+  pop_df |>
+    expand_grid(cd = seq(1L, max_seats)) |>
+    mutate(
+      hh_denom  = sqrt(cd * (cd - 1L)),
+      hh_denom  = if_else(cd == 1L, 1, hh_denom),
+      hh_weight = pop_t1 / hh_denom
+    ) |>
+    slice_max(hh_weight, n = n) |>
+    group_by(state) |>
+    summarise(pop_2030 = first(pop_t1), n_seats = n(), .groups = "drop") |>
+    mutate(pop_per_seat = pop_2030 / n_seats) |>
+    arrange(desc(n_seats), desc(pop_2030))
+}
+
+apportionment_2032 <- pop_forecast |>
+  filter(year == 2030, state %in% state.abb) |>
+  huntington_hill()
+
+apportionment_2032 |>
+  gt(rowname_col = "state") |>
+  cols_label(pop_2030 = "Projected 2030 Pop", n_seats = "Seats (2032)",
+             pop_per_seat = "Pop per Seat") |>
+  fmt_integer(c(pop_2030, pop_per_seat)) |>
+  data_color(columns = pop_per_seat, palette = "PuOr") |>
+  grand_summary_rows(columns = c(pop_2030, n_seats),
+                     fn = list("Total" ~ sum(.)),
+                     fmt = ~ fmt_integer(.)) |>
+  tab_header("Projected Congressional Apportionments for 2032",
+             subtitle = "Huntington-Hill method on 2030 population forecasts") |>
+  tab_source_note("Source: Author's calculations.")
+```
+
+```{r}
+#| label: task8-ny
+
+ny_2020 <- 26L
+ny_2032 <- apportionment_2032 |>
+  filter(state == MY_STATE_ABB) |> pull(n_seats)
+
+cat(glue(
+  "NY 2020 seats: {ny_2020} | Projected 2032: {ny_2032} | ",
+  "Change: {ny_2032 - ny_2020}\n"
+))
+```
+
+New York is projected to drop to **`r ny_2032`** seats, a loss of `r ny_2020 - ny_2032` from its current delegation. That seat moves to a growing Sun Belt state.
+
+---
+
+## Part IV: The Governor's Advertising Strategy
+
+### Task 9: Bringing New Yorkers Home
+
+*Memorandum | To: Governor of New York | From: Office of Strategic Demography*
+
+#### Sizing the Challenge
+
+```{r}
+#| label: task9-math
+
+test_seats <- function(boost) {
+  pop_forecast |>
+    filter(year == 2030, state %in% state.abb) |>
+    mutate(pop_t1 = if_else(state == MY_STATE_ABB,
+                             pop_t1 + boost, pop_t1)) |>
+    huntington_hill() |>
+    filter(state == MY_STATE_ABB) |>
+    pull(n_seats)
+}
+
+thresholds <- tibble(boost = seq(0, 500000, by = 10000)) |>
+  mutate(ny_seats = map_int(boost, test_seats))
+
+threshold <- thresholds |>
+  filter(ny_seats > ny_2032) |> slice_head(n = 1)
+
+cat(glue(
+  "NY needs ~{comma(threshold$boost)} net additional residents ",
+  "to gain one seat. At that level: {threshold$ny_seats} seats.\n"
+))
+```
+
+```{r}
+#| label: task9-targets
+
+migration_all |>
+  filter(state_1y == MY_STATE_ABB, state_current != MY_STATE_ABB,
+         year_current == 2024) |>
+  arrange(desc(population)) |> slice_head(n = 8) |>
+  select(`Destination State` = state_current,
+         `NY Residents Moved There (2024)` = population) |>
+  gt() |>
+  fmt_integer(2) |>
+  data_color(columns = 2, palette = "Reds") |>
+  tab_header("Primary Advertising Targets: Where NY Out-Migrants Land") |>
+  tab_source_note("Priority markets for a return-migration campaign.")
+```
+
+#### The Campaign
+
+**Target 1: Florida (Miami, Fort Lauderdale, Tampa):** Don't compete on sunshine. Sell what Florida can't: walkable neighborhoods, world-class transit, four seasons, and the best food scene on earth. Florida's insurance crisis and hurricane seasons have begun eroding its image. *Ad buy:* Streaming and local TV in Miami-Dade, Broward, Hillsborough; Spanish-language media in South Florida.
+
+**Target 2 : New Jersey (Newark corridor):** NY's largest in-migration source AND top out-migration destination. Same labor market, higher NJ property taxes. Pitch: Long Island and Westchester exist. *Ad buy:* NJ Transit hubs, LinkedIn in Bergen/Essex/Middlesex counties.
+
+**Target 3 : Pennsylvania (Philadelphia metro):** NYC expats seeking affordability. Upstate NY and the Hudson Valley compete directly. *Ad buy:* Digital and outdoor in Center City and Main Line suburbs.
+
+**Target 4 : Connecticut and Massachusetts:** Overflow markets,people who left for "more space" but remain culturally NY. The Catskills and Hudson Valley are the answer.
+
+#### The Slogans
+
+> **"New York: You know you miss it."**
+
+> *(Florida):* **"At least our gators stay in the sewers."**
+
+> *(NJ/Philly):* **"Come home. Long Island is not as far as you remember."**
+
+---
+
+## Extra Credit 01: The Case for a Bigger House
+
+The US House of Representatives has had 435 members since 1929, the same year the stock market crashed and there were 123 million Americans. Today there are 335 million of us crammed into the same legislative structure. The result is a House that is systematically underrepresentative, and New York suffers most.
+
+Consider the equity problem first. A House seat in Wyoming represents about 578,000 people, while one in New York represents nearly 780,000. That gap is not gerrymandering,it's a structural artifact of forcing a diverse, large-population democracy into an undersized vessel. A larger House from 573 members under the Wyoming Rule to 700+ in more ambitious reforms would directly compress this disparity. New York would benefit most: more appropriations presence, more committee assignments, more leverage over transit funding, healthcare, and financial regulation.
+
+Second, consider democratic culture. When each House seat is scarce, the incentive to protect it through gerrymandering is overwhelming. Smaller districts mean more coherent communities and more accountable representatives. For a heterogeneous state like New York: rural Adirondack counties alongside dense Brooklyn precincts, this matters enormously. The argument is not partisan: scholars on both the left and right have made the case for expansion. What we're proposing is simply to stop treating 435 as sacred. The Constitution sets no upper limit. It's a statute, not scripture, last updated when Herbert Hoover was president.
+
+---
+
+## Extra Credit 02: Spatial Visualizations
+
+### Map 1 : Net Internal Migration by State, 2024
+
+```{r}
+#| label: ec02-map1
+#| fig-height: 6
+
+state_pop_geo |>
+  mutate(state_abb = state.abb[match(state, state.name)]) |>
+  filter(!is.na(state_abb)) |>
+  left_join(state_net, by = c("state_abb" = "state")) |>
+  ggplot() +
+  geom_sf(aes(fill = net), color = "white", linewidth = 0.3) +
+  scale_fill_gradient2(
+    low = "#d73027", mid = "#ffffbf", high = "#1a9641",
+    midpoint = 0, labels = comma, name = "Net Migration"
+  ) +
+  coord_sf(crs = 5070) +
+  labs(title = "Net Internal Migration by State, 2024",
+       subtitle = "Green = net gains; Red = net losses",
+       caption = "Source: US Census Bureau, 2024 State-to-State Migration Table.") +
+  theme_void(base_size = 12) +
+  theme(plot.title    = element_text(face = "bold", size = 14),
+        plot.subtitle = element_text(color = "grey40"),
+        plot.caption  = element_text(color = "grey55", size = 9),
+        legend.position = "right")
+```
+
+### Map 2 : Projected Population Change, 2024-2030
+
+```{r}
+#| label: ec02-map2
+#| fig-height: 6
+
+pop_forecast |>
+  filter(year == 2030) |>
+  left_join(
+    state_pop |> filter(year == 2024) |>
+      mutate(s = state.abb[match(state, state.name)]) |>
+      filter(!is.na(s)) |> select(s, pop_2024 = population),
+    by = c("state" = "s")
+  ) |>
+  mutate(
+    pct        = (pop_t1 - pop_2024) / pop_2024,
+    state_name = state.name[match(state, state.abb)]
+  ) |>
+  right_join(state_pop_geo, by = c("state_name" = "state")) |>
+  st_as_sf() |>
+  ggplot() +
+  geom_sf(aes(fill = pct), color = "white", linewidth = 0.3) +
+  scale_fill_gradient2(
+    low = "#d73027", mid = "#ffffbf", high = "#4dac26",
+    midpoint = 0, labels = percent_format(accuracy = 0.1),
+    name = "% Change"
+  ) +
+  coord_sf(crs = 5070) +
+  labs(title    = "Projected Population Change by State, 2024-2030",
+       subtitle = "Gravity model with averaged 2023-2024 ACS parameters",
+       caption  = "Source: Author's projections.") +
+  theme_void(base_size = 12) +
+  theme(plot.title    = element_text(face = "bold", size = 14),
+        plot.subtitle = element_text(color = "grey40"),
+        plot.caption  = element_text(color = "grey55", size = 9),
+        legend.position = "right")
+```
+
+### Chord Diagram : New York's Top Migration Corridors
+
+```{r}
+#| label: ec02-chord
+#| fig-height: 8
+#| fig-width: 8
+
+ny_edges <- bind_rows(
+  migration_all |>
+    filter(state_current == MY_STATE_ABB, state_1y != MY_STATE_ABB,
+           state_1y != "Abroad", year_current == 2024) |>
+    arrange(desc(population)) |> slice_head(n = 10) |>
+    transmute(from = state_1y, to = MY_STATE_ABB, weight = population),
+  migration_all |>
+    filter(state_1y == MY_STATE_ABB, state_current != MY_STATE_ABB,
+           year_current == 2024) |>
+    arrange(desc(population)) |> slice_head(n = 10) |>
+    transmute(from = MY_STATE_ABB, to = state_current, weight = population)
+) |> distinct()
+
+ny_graph <- graph_from_data_frame(ny_edges, directed = TRUE)
+
+ggraph(ny_graph, layout = "linear", circular = TRUE) +
+  geom_edge_arc(
+    aes(edge_width = weight, edge_color = from == MY_STATE_ABB),
+    alpha = 0.65,
+    arrow = arrow(length = unit(2, "mm"), type = "closed"),
+    end_cap = circle(3, "mm")
+  ) +
+  geom_node_point(size = 7, color = "#2c7bb6") +
+  geom_node_label(aes(label = name), size = 3.5, nudge_y = 0.18) +
+  scale_edge_width(range = c(0.5, 4.5), guide = "none") +
+  scale_edge_color_manual(
+    values = c("FALSE" = "#2c7bb6", "TRUE" = "#d7191c"),
+    labels = c("Into NY", "Out of NY"), name = "Direction"
+  ) +
+  labs(title    = "New York's Top Migration Corridors (2024)",
+       subtitle = "Red = out-migration from NY; Blue = in-migration to NY",
+       caption  = "Source: US Census Bureau, 2024 State-to-State Migration Table.") +
+  theme_graph(base_size = 12) +
+  theme(plot.title    = element_text(face = "bold", size = 14),
+        plot.subtitle = element_text(color = "grey40"),
+        legend.position = "bottom")
+```
+
+---
+
+## Extra Credit 03: State-Specific Growth Rates
+
+The baseline model assumes every state grows at the same natural rate. In reality, states with older populations have different birth-to-death dynamics than younger states like Utah. I'll estimate state-specific $g_i$ and compare.
+
+```{r}
+#| label: ec03-rates
+
+state_g_rates <- migration_all |>
+  filter(year_current == 2024) |>
+  group_by(state = state_current) |>
+  summarise(
+    total_arrivals = sum(population[state_1y != state_current], na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  left_join(
+    state_pop |> filter(year == 2024) |>
+      mutate(s = state.abb[match(state, state.name)]) |>
+      filter(!is.na(s)) |> select(s, pop_2024 = population),
+    by = c("state" = "s")
+  ) |>
+  left_join(
+    state_pop |> filter(year == 2023) |>
+      mutate(s = state.abb[match(state, state.name)]) |>
+      filter(!is.na(s)) |> select(s, pop_2023 = population),
+    by = c("state" = "s")
+  ) |>
+  filter(state %in% state.abb) |>
+  mutate(g_i = (pop_2024 - pop_2023 - total_arrivals) / pop_2023)
+
+state_g_rates |>
+  arrange(desc(g_i)) |>
+  ggplot(aes(fct_reorder(state, g_i), g_i, fill = g_i > g_bar_avg)) +
+  geom_col() +
+  geom_hline(yintercept = g_bar_avg, linetype = "dashed", color = "grey30") +
+  coord_flip() +
+  scale_fill_manual(
+    values = c("TRUE" = "#2c7bb6", "FALSE" = "#d7191c"),
+    labels = c("Above avg", "Below avg"), name = NULL
+  ) +
+  scale_y_continuous(labels = percent_format(accuracy = 0.01)) +
+  labs(title    = "State-Specific Natural Growth Rates (g_i), 2023-2024",
+       subtitle = "Dashed line = national average. Net of all migration.",
+       x = NULL, y = "Growth Rate",
+       caption  = "Source: Author's calculations.") +
+  theme_nika()
+```
+
+```{r}
+#| label: ec03-project
+
+project_stateg <- function(pop_now, m_ij, g_rates, g_nat) {
+  pop_now <- pop_now |> rename(state_i = state, pop_t = pop_t1)
+
+  mig_in <- m_ij |>
+    left_join(pop_now |> select(state_i, pop_i = pop_t), by = "state_i") |>
+    left_join(pop_now |> rename(state_j = state_i, pop_j = pop_t),
+              by = "state_j") |>
+    mutate(flow = m_ji * sqrt(pop_i * pop_j)) |>
+    group_by(state_i) |>
+    summarise(mig_in = sum(flow, na.rm = TRUE), .groups = "drop")
+
+  pop_now |>
+    left_join(g_rates |> select(state, g_i),
+              by = c("state_i" = "state")) |>
+    left_join(mig_in, by = "state_i") |>
+    mutate(
+      g_use  = replace_na(g_i, g_nat),
+      pop_t1 = pop_t * (1 + g_use) + replace_na(mig_in, 0)
+    ) |>
+    select(state = state_i, pop_t1)
+}
+
+proj_sg <- list()
+iter_sg <- current_pop
+
+for (yr in 2025:2030) {
+  iter_sg <- project_stateg(iter_sg, m_ij_avg, state_g_rates, g_bar_avg)
+  proj_sg[[as.character(yr)]] <- iter_sg |> mutate(year = yr)
+}
+
+forecast_sg <- bind_rows(proj_sg)
+
+bind_rows(
+  pop_forecast |> filter(state == MY_STATE_ABB) |>
+    mutate(model = "National g-bar"),
+  forecast_sg  |> filter(state == MY_STATE_ABB) |>
+    mutate(model = "State-specific g_i")
+) |>
+  ggplot(aes(year, pop_t1, color = model, group = model)) +
+  geom_line(linewidth = 1.3) + geom_point(size = 2.5) +
+  scale_y_continuous(labels = label_number(scale = 1e-6, suffix = "M")) +
+  scale_color_manual(
+    values = c("National g-bar" = "#2c7bb6",
+               "State-specific g_i" = "#d7191c")
+  ) +
+  labs(title = "NY Projected Population: Two Model Variants",
+       x = "Year", y = "Population", color = "Model",
+       caption = "Source: Author's calculations.") +
+  theme_nika()
+```
+
+New York's state-specific growth rate sits below the national average : older population, lower birth rates in high-cost urban areas. This compounds over six years, reinforcing the urgency of the migration strategy.
+
+---
+
+## Extra Credit 04: Model Validation
+
+Before trusting six-year projections, I'll retrofit the model using 2022 data and compare projections to actual 2023 and 2024 values.
+
+```{r}
+#| label: ec04-retro
+
+params_retro <- fit_model_params(migration_all, state_pop, 2023, 2022)
+
+pop_2022 <- state_pop |>
+  filter(year == 2022) |>
+  mutate(s = state.abb[match(state, state.name)]) |>
+  filter(!is.na(s)) |>
+  select(state = s, pop_t1 = population)
+
+proj_2023v <- project_one_year(pop_2022,   params_retro$m_ij, params_retro$g_bar)
+proj_2024v <- project_one_year(proj_2023v, params_retro$m_ij, params_retro$g_bar)
+
+get_actual <- function(yr) {
+  state_pop |> filter(year == yr) |>
+    mutate(s = state.abb[match(state, state.name)]) |>
+    filter(!is.na(s)) |>
+    select(state = s, actual = population)
+}
+
+val_errors <- bind_rows(
+  proj_2023v |> rename(projected = pop_t1) |>
+    left_join(get_actual(2023), by = "state") |>
+    mutate(horizon = "1-year (2022 to 2023)",
+           abs_err = abs(projected - actual),
+           pct_err = abs_err / actual),
+  proj_2024v |> rename(projected = pop_t1) |>
+    left_join(get_actual(2024), by = "state") |>
+    mutate(horizon = "2-year (2022 to 2024)",
+           abs_err = abs(projected - actual),
+           pct_err = abs_err / actual)
+)
+```
+
+```{r}
+#| label: ec04-summary
+
+val_errors |>
+  group_by(horizon) |>
+  summarise(
+    mean_pct   = mean(pct_err,   na.rm = TRUE),
+    median_pct = median(pct_err, na.rm = TRUE),
+    max_pct    = max(pct_err,    na.rm = TRUE),
+    rmse       = sqrt(mean((projected - actual)^2, na.rm = TRUE)),
+    .groups    = "drop"
+  ) |>
+  gt() |>
+  cols_label(horizon = "Horizon", mean_pct = "Mean % Err",
+             median_pct = "Median % Err", max_pct = "Max % Err",
+             rmse = "RMSE") |>
+  fmt_percent(c(mean_pct, median_pct, max_pct), decimals = 2) |>
+  fmt_integer(rmse) |>
+  tab_header("Model Validation: Retrospective Accuracy",
+             subtitle = "2022 base projections vs. actual 2023-2024 ACS-1") |>
+  tab_source_note("Source: Author's calculations.")
+```
+
+```{r}
+#| label: ec04-ci
+
+ny_2030_p <- pop_forecast |>
+  filter(state == MY_STATE_ABB, year == 2030) |> pull(pop_t1)
+
+err_2yr <- val_errors |>
+  filter(horizon == "2-year (2022 to 2024)", pct_err < 0.5) |>
+  summarise(e = median(pct_err, na.rm = TRUE)) |> pull(e)
+
+err_6yr <- (1 + err_2yr)^3 - 1
+
+cat(glue(
+  "NY 2030 projection: {comma(round(ny_2030_p))}\n",
+  "Estimated 6-year uncertainty: +/-{percent(err_6yr, accuracy = 0.1)}\n",
+  "Approx 90% CI: [{comma(round(ny_2030_p * (1 - err_6yr)))}, ",
+  "{comma(round(ny_2030_p * (1 + err_6yr)))}]\n"
+))
+```
+
+```{r}
+#| label: ec04-plot
+
+val_errors |>
+  filter(horizon == "1-year (2022 to 2023)", pct_err < 0.5) |>
+  ggplot(aes(fct_reorder(state, pct_err), pct_err,
+             fill = state == MY_STATE_ABB)) +
+  geom_col() + coord_flip() +
+  scale_y_continuous(labels = percent_format(accuracy = 0.1),
+                     limits = c(0, 0.25)) +
+  scale_fill_manual(
+    values = c("FALSE" = "#9ecae1", "TRUE" = "#d7191c"),
+    guide  = "none"
+  ) +
+  labs(title    = "Forecast Error by State (1-Year Horizon)",
+       subtitle = "Red = New York. States with >50% error excluded as outliers.",
+       x = NULL, y = "Absolute % Error",
+       caption  = "Source: Author's retrospective projection.") +
+  theme_nika()
+```
+
+The model performs well at the 1-year horizon median error under 1% for most states. New York, large and demographically stable, sits near the median. The 2030 projection carries a confidence interval of several hundred thousand people.
+
+---
+
+## Conclusion
+
+New York's demographic story is uncomfortable but not hopeless. The data is clear: we're losing the migration race to the Sun Belt, and our congressional delegation will pay the price. But the same data shows us exactly where that loss is happening and those corridors can be targeted, messaged, and reversed.
+
+This project also reinforced something I already knew from project management: the messiest part of the job is data preparation, not the model. Getting the 2023 and 2024 Census files to speak to each other,the 2024 file alone switched to a completely new long format took more careful thinking than the Huntington-Hill calculation at the end. The "not so glamourous"  work is where the reliability lives.
+
+New York has been losing the story. It doesn't need to keep losing the seats.
+
+---
+
+::: {.callout-note title="AI Usage Statement" collapse="true"}
+
+Claude (claude.ai, Anthropic) was used to help draft and structure the R code in this project, including the data import functions, the gravity model implementation, and the Huntington-Hill calculation. Claude was also used to debug the Census Excel file parsing, the 2024 T13 file switched to a long format this year, requiring a complete rewrite of the parser. All non-code written text, the narrative, interpretations, policy recommendations, and extra credit arguments was written by me without use of any generative AI tools. Claude was used like an advanced TA: to work through implementation choices and catch edge cases, not to write the analysis itself.
+
+:::
+
+---
+
+*Submitted to [github.com/dhwanikan/STA9750-2026-SPRING](https://github.com/dhwanikan/STA9750-2026-SPRING) as `mp03.html`.*
+*Course: STA 9750, Professor Michael Weylandt, Baruch College (CUNY), Spring 2026.*
