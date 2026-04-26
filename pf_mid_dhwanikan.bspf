@@ -1,0 +1,54 @@
+felisita101:
+  evaluator: dhwanikan
+  teammate: felisita101
+  n_questions: 5
+  questions:
+    OQ: 4
+    SQ: 4
+    DS: 5
+    RR: 5
+    PR: 3
+  overall_comments:
+    positive: She was great at researching data bases for their credibility and her
+      marketing major came in handy for the presentation dialouge structure.
+    negative: She went over her assigned minutes which hurt us a lot overall. bad
+      part was that I already warned her during our "rehearsals" that she is going
+      over so keep it short.
+    advice: be more clear in her explanation - she tends to run around in circles
+      a lot
+    instructor: ''
+  cycle: mid
+helly101-1:
+  evaluator: dhwanikan
+  teammate: helly101-1
+  n_questions: 5
+  questions:
+    OQ: 3
+    SQ: 4
+    DS: 4
+    RR: 5
+    PR: 5
+  overall_comments:
+    positive: She doesn't say no to anything is willing to work with all aspects'
+    negative: availability issues some times
+    advice: Be more interactive
+    instructor: ''
+  cycle: mid
+khushwant-khatri590:
+  evaluator: dhwanikan
+  teammate: khushwant-khatri590
+  n_questions: 5
+  questions:
+    OQ: 3
+    SQ: 4
+    DS: 4
+    RR: 5
+    PR: 5
+  overall_comments:
+    positive: Analytical skills
+    negative: Availability issues
+    advice: take more initiative
+    instructor: ''
+  cycle: mid
+evaluator: dhwanikan
+

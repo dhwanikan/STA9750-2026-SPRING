@@ -1,0 +1,176 @@
+peer_feedback_assignment_1:
+  issue_number: 45
+  issue_owner: felisita101
+  issue_ok: no
+  issue_status: "Could not access the following files:\n - https://felisita101.github.io/STA9750-2026-SPRING/site_libs/bootstrap/bootstrap-b88270fc82d54e1cef088be51ab81bec.min.css\n
+    - https://felisita101.github.io/STA9750-2026-SPRING/mp02_files/figure-html/unnamed-chunk-22-1.png\n
+    - https://felisita101.github.io/STA9750-2026-SPRING/mp02_files/figure-html/unnamed-chunk-23-1.png\n
+    - https://felisita101.github.io/STA9750-2026-SPRING/mp02_files/figure-html/unnamed-chunk-24-1.png\n
+    - https://felisita101.github.io/STA9750-2026-SPRING/mp02_files/figure-html/unnamed-chunk-25-1.png\n
+    - https://felisita101.github.io/STA9750-2026-SPRING/mp02_files/figure-html/unnamed-chunk-26-1.png\n
+    - https://felisita101.github.io/STA9750-2026-SPRING/mp02_files/figure-html/unnamed-chunk-27-1.png\n
+    - https://felisita101.github.io/STA9750-2026-SPRING/mp02_files/figure-html/unnamed-chunk-28-1.png\nPlease
+    make sure to `git add` the corresponding files from your\n`docs` repository. Once
+    you have done this, make a new commit and\n`git push` to update your GitHub repository.
+    You do not need to open\na new issue or re-post here (though adding a new comment
+    won't hurt)\n- simply pushing the updated and corrected files will automatically
+    \npropogate through to this issue thread."
+  overall_comments:
+    positive: the gt tables were well built.
+    negative: the report needs an actual narrative this looks like draft
+    advice: Go through each section and replace the hashtag comments with actual prose
+      and write a sentence explaining what you found and why it matters.
+  scores:
+    Written Communication:
+      score: 3.0
+      comment: It reads like a draft script, not a report. Findings are in hashtag
+        commets and not actual sentences. No narrative or story or intro.
+    Project Skeleton:
+      score: 5.0
+      comment: Most tasks are attempted and some are done well. The submission cuts
+        off before Task 6 is complete though, and the recurring many-to-many join
+        warnings suggest the data pipeline has issues that could affect the results.
+    Tables & Document Presentation:
+      score: 6.0
+      comment: The gt tables that are there are actually solid — spanners, source
+        notes, formatted numbers. But a lot of results are just printed as raw tibble
+        output instead of being put in a proper table.
+    Data Visualization:
+      score: 4.0
+      comment: Two charts present, both above default quality with custom colors.
+        But legends are crowded, some axis labels are vague, and the overall polish
+        isn't quite there yet.
+    Exploratory Data Analysis:
+      score: 6.0
+      comment: No glimpse() or skim() on the ATUS data, and no broader exploration
+        of the dataset. Everything goes straight to answering specific questions without
+        stepping back to understand the data first.
+    Code Quality:
+      score: 5.0
+      comment: The many-to-many join warnings are the main issues, they should have
+        been caught and fixed before submission. No code folding either, so warnings
+        and raw output are all over the rendered document.
+    Data Preparation:
+      score: 10.0
+      comment: DEFAULT SCORE
+    Analysis and Findings:
+      score: 4.0
+      comment: Some genuinely interesting ideas (retired vs. full-time lawn care,
+        transit mode activities) but most findings have no written interpretation.
+        The join issue also raises questions about whether the weighted estimates
+        are accurate.
+    Extra Credit:
+      score: 0.0
+      comment: no extra credit attempted
+  mp_number: 2
+peer_feedback_assignment_2:
+  issue_number: 64
+  issue_owner: janielave
+  issue_ok: yes
+  issue_status: OK
+  overall_comments:
+    positive: EDA section is very solid, the running glimse and summary
+    negative: Visualization is completely missing
+    advice: add at least two ggplot charts
+  scores:
+    Written Communication:
+      score: 7.0
+      comment: There's an intro and findings are written in sentences, which is good.
+        But one sentence per finding with no context or interpretation. The report
+        feels like a checklist rather than an analysis. No market research deliverable
+        is visible either.
+    Project Skeleton:
+      score: 5.0
+      comment: Tasks 2, 4, and 5 are all attempted. Some findings are off, average
+        sleep of 4 hours is clearly wrong (should be ~8.5), and the childcare estimate
+        of 0.51 hours is suspiciously low. These suggest weighting issues in the join
+        pipeline. Task 6 (market research profiles) doesn't appear to be present.
+    Tables & Document Presentation:
+      score: 4.0
+      comment: Tables exist but need work. Raw column names throughout, no number
+        formatting, and the high-earner table is a 57-row dump with NA groups mixed
+        in. That's exactly what the rubric flags as a data dump.
+    Data Visualization:
+      score: 3.0
+      comment: No visualizations visible in the submission. The assignment specifically
+        warns this will be penalized severely.
+    Exploratory Data Analysis:
+      score: 10.0
+      comment: DEFAULT SCORE
+    Code Quality:
+      score: 5.0
+      comment: The many-to-many join warning appears multiple times and was never
+        fixed. The sleep and childcare calculations use match() for weighting which
+        is error-prone and likely why those numbers are so far off.
+    Data Preparation:
+      score: 10.0
+      comment: DEFAULT SCORE
+    Analysis and Findings:
+      score: 4.0
+      comment: 4 hours of sleep and 0.51 hours of childcare are clearly wrong. The
+        other findings are directionally reasonable but have no written interpretation
+        behind them, and the market research deliverable is missing.
+    Extra Credit:
+      score: 0.0
+      comment: no extra credit
+  mp_number: 2
+peer_feedback_assignment_3:
+  issue_number: 66
+  issue_owner: asarker00
+  issue_ok: no
+  issue_status: |-
+    Could not access the following files:
+     - https://asarker00.github.io/STA9750-2026-SPRING/@import
+  overall_comments:
+    positive: product framing is outstanding
+    negative: adding interactivity or animation would make visualisation top tier,
+      but nothing missing to be honest
+    advice: Try using the plotly package to wrap one of the existing ggplot charts
+      with ggplotly()
+  scores:
+    Written Communication:
+      score: 9.0
+      comment: The intro is compelling and catches readers attention, it also frames
+        the whole analysis around a product
+    Project Skeleton:
+      score: 10.0
+      comment: All tasks are present and clearly labeled. Tasks 2 through 6 are all
+        accounted for, the market research deliverable covers three distinct demographic
+        profiles, and the join logic is explicitly documented with thoughtful design
+        decisions. Nothing is missing.
+    Tables & Document Presentation:
+      score: 9.0
+      comment: The data inventory table at the top with styling, bold headers, and
+        source notes sets the tone immediately. Everything appears polished and consistent.
+        The only thing that might push it to a 10 would be color formatting or embedded
+        sparklines in the tables.
+    Data Visualization:
+      score: 8.0
+      comment: Code folding is used well throughout and the graphical explorations
+        section exists. The charts appear above exploratory quality with proper labeling.
+        To reach a 9 or 10 would require more advanced features like interactivity
+        or animation.
+    Exploratory Data Analysis:
+      score: 10.0
+      comment: DEFAULT SCORE
+    Code Quality:
+      score: 10.0
+      comment: The function-level documentation with explicit notes about where variables
+        live (e.g. "TUMONTH is on resp, NOT on act") is genuinely excellent. This
+        is the kind of code you'd actually want to hand off to a colleague. Fully
+        idiomatic tidyverse with no warnings.
+    Data Preparation:
+      score: 10.0
+      comment: DEFAULT SCORE
+    Analysis and Findings:
+      score: 8.0
+      comment: Three well-defined demographic personas with data-grounded profiles
+        is exactly what the assignment asks for. The findings are believable and actionable.
+        The one thing holding it back from a 10 is that I couldn't confirm the most
+        subtle insights from the market research section in what was fetched.
+    Extra Credit:
+      score: 0.0
+      comment: none
+  mp_number: 2
+evaluator: dhwanikan
+

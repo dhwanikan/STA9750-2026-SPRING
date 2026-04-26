@@ -3,14 +3,18 @@ project:
   output-dir: docs
 
 website:
-  title: "STA 9750 Mini Projects"
+  title: "STA 9750 Submission Material"
+  description:
+    Course Projects for STA 9750 at Baruch College
+  site-url: "https://dhwanikan.github.io/STA9750-2026-SPRING/"
   navbar:
-    left:
-      - text: "Home"
-        href: index.qmd
-
+    background: primary
+    search: false
+    
 format:
   html:
-    theme: cosmo
-    toc: true
-    
+    theme: cyborg
+    toc: false
+
+editor:
+  mode: source

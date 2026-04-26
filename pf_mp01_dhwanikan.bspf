@@ -1,0 +1,310 @@
+peer_feedback_assignment_1:
+  issue_number: 25
+  issue_owner: carmine-montaperto
+  issue_ok: yes
+  issue_status: OK
+  overall_comments:
+    positive: The Op-Ed is the clear standout — it reads like an actual op-ed with
+      a real argument, a logical narrative arc, and appropriate intellectual honesty
+      about not over-interpreting a single year of post-SFFA data. That kind of analytical
+      restraint is harder to write than it looks.
+    negative: Tasks 5 and 6 are entirely missing — the five inline scalar answers
+      and five required gt tables represent the core of the instructor-prescribed
+      analysis and their absence is the biggest gap in the submission. Completing
+      those would significantly strengthen the report.
+    advice: Go back and complete Tasks 5 and 6 in full — work through each of the
+      five inline questions using Quarto inline code chunks so the values are dynamically
+      computed rather than typed in manually, and build out the five gt tables with
+      proper titles, formatted numbers, and clean column labels. Also add the `is_cuny`
+      and `is_calpublic` flags to the IPEDS data and use them to actually pull California
+      school data to support the comparison mentioned in the Op-Ed.
+  scores:
+    Written Communication:
+      score: 8.0
+      comment: The intro does a nice job framing what the project is about, and the
+        "Key Insight" callouts after each chart are a helpful touch. That said, most
+        of the writing is pretty brief — a sentence or two after each section rather
+        than a real analytical narrative. The bigger concern is that I couldn't find
+        a clearly labeled Op-Ed section, which is the main deliverable of this project.
+        If it's there but not clearly set off from the rest of the report, it needs
+        to be more visible. The rubric specifically calls out that an Op-Ed that isn't
+        clearly delineated gets capped at "Good" for written communication, so that's
+        worth fixing.
+    Project Skeleton:
+      score: 4.0
+      comment: Tasks 2 and 3 are missing — the is_cuny and is_calpublic flags were
+        never added to the IPEDS data, so the California comparison in the Op-Ed has
+        no actual data behind it. More significantly, Tasks 5 and 6 are entirely absent
+        — there are no inline answers to the five scalar questions and none of the
+        five required gt tables. That's a lot of mandatory work left undone. The Op-Ed
+        itself is well done, which prevents the score from going lower, but too many
+        required tasks are missing for this to land above Adequate.
+    Tables & Document Presentation:
+      score: 6.0
+      comment: the two gt tables that are present are reasonably well formatted with
+        titles and clean column labels, but there are raw print() outputs sitting
+        in the final document that shouldn't be there. And since so many of the required
+        tables from Task 6 are missing entirely, there isn't much to evaluate beyond
+        those two.
+    Data Visualization:
+      score: 10.0
+      comment: DEFAULT SCORE
+    Exploratory Data Analysis:
+      score: 4.0
+      comment: Tasks 5 and 6 — the instructor-prescribed EDA questions — are entirely
+        missing. There are no inline answers to the five scalar questions, no gt tables
+        for the five required table questions, and no exploration of the broader IPEDS
+        dataset. The analysis jumps straight to Rutgers-specific work without engaging
+        with the national data at all. The EDA that is present is clean but covers
+        only a small slice of what was required.
+    Code Quality:
+      score: 7.0
+      comment: 'The code is clean and readable throughout, and the consistent use
+        of explicit dplyr:: and purrr:: namespace prefixes is actually more careful
+        than most submissions. Variable names are clear and the data cleaning pipeline
+        is well organized. The main issue is the two print() calls left in the final
+        rendered document — those look like debugging artifacts that should have been
+        removed or replaced with gt tables before submission. They don''t break anything
+        but they don''t belong in a polished report.'
+    Data Preparation:
+      score: 6.0
+      comment: The data acquisition function is correctly implemented and the local
+        caching logic works well. However, the is_cuny and is_calpublic flags required
+        by Tasks 2 and 3 were never added to the IPEDS data, which means the data
+        preparation is incomplete. The California comparison mentioned in the Op-Ed
+        has no supporting data behind it since no CA schools were ever identified
+        in the dataset.
+    Analysis and Findings:
+      score: 6.0
+      comment: The Rutgers-specific analysis is sound and the findings are believable
+        — the steady rise in diversity share from 25.7% in 2010 to 36.5% in 2024 is
+        well documented, and the observation that the 2024 first-year class jumped
+        to 38.7% is genuinely interesting. The writing is also appropriately cautious
+        about not over-interpreting a single year of data. The limitation is that
+        the analysis covers only one institution with no real comparative context
+        — the California comparison is mentioned in the Op-Ed but never actually supported
+        with data, and none of the broader national questions from Tasks 5 and 6 were
+        answered. Good for what it covers, but it covers too narrow a slice of what
+        was asked. Sonnet 4.6
+    Extra Credit:
+      score: 0.0
+      comment: No extra credit — the submission doesn't attempt any of the three extra
+        credit opportunities (entropy analysis, KL divergence, or data visualization
+        bonus).
+  mp_number: 1
+peer_feedback_assignment_2:
+  issue_number: 26
+  issue_owner: maryononye
+  issue_ok: yes
+  issue_status: OK
+  overall_comments:
+    positive: The most impressive part is how complete this submission is — every
+      required task is done, the extra credit KL divergence analysis is correctly
+      implemented and clearly explained, and the Op-Ed actually reads like something
+      a college president would publish. That combination of technical thoroughness
+      and strong writing is rare in a single submission.
+    negative: The column labels in the gt tables still use raw variable names like
+      institution_id, state, and kl_divergence instead of clean, human-readable labels.
+      Adding cols_label() to each table would make them genuinely publication-quality.
+    advice: Go through each gt table and add a cols_label() call that replaces the
+      raw variable names with proper human-readable labels — for example, institution_id
+      becomes "Institution ID", kl_divergence becomes "KL Divergence", state becomes
+      "State", and so on. While you're at it, add tab_source_note() citing IPEDS to
+      each table. Those two changes alone would noticeably elevate the presentation
+      quality across the whole report.
+  scores:
+    Written Communication:
+      score: 8.0
+      comment: The report is well-written and easy to follow throughout. The Op-Ed
+        is clearly delineated, written in a convincing presidential voice, and builds
+        a real argument rather than just listing statistics. The narrative around
+        Baruch's growth and diversity is genuinely engaging. The one thing holding
+        it back from a 9 is that the California comparison in the Op-Ed gets cut off
+        mid-sentence and appears incomplete — the analysis is referenced but the actual
+        comparison with specific CA school data never lands in the text. That said,
+        the rest of the writing is clean and flows naturally.
+    Project Skeleton:
+      score: 9.0
+      comment: This is one of the most complete submissions I reviewed. All required
+        tasks are present and correctly executed — Tasks 1 through 6 are all done,
+        the inline answers in Task 5 are correct, and all five Task 6 gt tables are
+        there. On top of that, the KL divergence extra credit is implemented and explained
+        well. The only minor gap is that the is_calpublic flag uses a straightforward
+        str_detect approach that correctly catches most schools but misses Cal Poly
+        SLO and a few standalone CSU campuses. That's a small issue and doesn't detract
+        much from an otherwise thorough submission.
+    Tables & Document Presentation:
+      score: 7.0
+      comment: he gt tables are solid across the board — titles, formatted numbers,
+        and percent columns are all properly handled. The CUNY first-year table and
+        the Baruch enrollment table in particular are clean and easy to read. The
+        main area for improvement is column labels — most tables still use raw variable
+        names like institution_id, state, total_grad_students, and kl_divergence instead
+        of human-readable labels. Adding cols_label() throughout would push these
+        from good to publication-quality. Source notes citing IPEDS would also be
+        a nice finishing touch.
+    Data Visualization:
+      score: 10.0
+      comment: DEFAULT SCORE
+    Exploratory Data Analysis:
+      score: 10.0
+      comment: DEFAULT SCORE
+    Code Quality:
+      score: 8.0
+      comment: 'The code is clean, readable, and consistently idiomatic tidyverse
+        throughout. Variable names are descriptive and the pipeline structure is logical.
+        The KL divergence calculation using rowwise() works correctly, though a pivot_longer
+        approach would be more efficient at scale. One minor note: slice(1:5) appears
+        duplicated back-to-back in the white share decline table — slice(1:5) |> slice(1:5)
+        — which is harmless but suggests a copy-paste artifact. Nothing major, overall
+        very solid.'
+    Data Preparation:
+      score: 10.0
+      comment: DEFAULT SCORE
+    Analysis and Findings:
+      score: 8.0
+      comment: The findings are sound, believable, and well-supported throughout.
+        The Baruch diversity trend, the CUNY first-year breakdown, and the KL divergence
+        analysis all pass the sniff test. The extra credit work on KL divergence is
+        a genuine analytical contribution. The one gap is the California comparison
+        in the Op-Ed — it's set up well conceptually but the actual comparison with
+        specific CA school numbers appears to get cut off and never completes. That's
+        the main thing preventing this from scoring higher.
+    Extra Credit:
+      score: 3.0
+      comment: The KL divergence is correctly implemented and explained clearly. It
+        earns the full extra credit for that component.
+  mp_number: 1
+peer_feedback_assignment_3:
+  issue_number: 34
+  issue_owner: felisita101
+  issue_ok: no
+  issue_status: Incorrect URL submitted
+  overall_comments:
+    positive: The spanner table comparing racial enrollment across five states from
+      2013 to 2023 is genuinely well done — that's a sophisticated gt move that most
+      submissions didn't attempt.
+    negative: The required tasks — especially Tasks 5, 6, and the Op-Ed — need to
+      be completed. The submission is creative but it mostly answers questions the
+      student invented rather than the ones the instructor assigned.
+    advice: ''
+  scores:
+    Written Communication:
+      score: 5.0
+      comment: The writing has personality and the framing around the five most populous
+        states is a creative angle. But the report doesn't follow the report format
+        the assignment asks for — there's no formal Op-Ed section, and most findings
+        are answered with brief italicized paragraphs rather than analytical narrative.
+        The intro is more of a personal journal entry than a report introduction.
+        Key findings are hard to find and lack context.
+    Project Skeleton:
+      score: 3.0
+      comment: Tasks 5 and 6 are entirely missing — no inline answers to the scalar
+        questions, no required gt tables for Baruch, CUNY first-year enrollment, state
+        grad breakdowns, white share declines, or female share trends. The is_calpublic
+        flag was replaced with a california_system variable using different logic.
+        There's no Op-Ed. The submission follows a self-defined structure that diverges
+        significantly from what the instructor required.
+    Tables & Document Presentation:
+      score: 5.0
+      comment: The comparison table with spanners for White/Black/Hispanic/Asian across
+        2013 and 2023 is genuinely impressive — that's good gt usage. The other tables
+        are functional but missing titles and source notes. Overall the table work
+        shows real effort, just applied to the wrong questions.
+    Data Visualization:
+      score: 10.0
+      comment: DEFAULT SCORE
+    Exploratory Data Analysis:
+      score: 3.0
+      comment: The glimpse() and skim() checks aren't present, and all five required
+        Task 5 and Task 6 questions are missing. The EDA that exists is creative but
+        entirely self-directed and doesn't engage with the instructor's prescribed
+        questions at all.
+    Code Quality:
+      score: 6.0
+      comment: The code runs and is readable. The comparison table with pivot_wider
+        and tab_spanner shows real skill. Inconsistent indentation in places and the
+        california_system flag uses different logic than what was asked for, but nothing
+        is broken.
+    Data Preparation:
+      score: 6.0
+      comment: Data loads correctly and caching works. The is_cuny flag is correct.
+        The is_calpublic flag was renamed california_system and uses broader logic
+        (str_detect(institution_name, "University") & str_detect(institution_name,
+        "California")) that would catch private schools like USC and Pepperdine —
+        that's a meaningful error.
+    Analysis and Findings:
+      score: 5.0
+      comment: The 2013 vs 2023 state comparison is interesting and the Hispanic enrollment
+        growth finding in California is a real insight. But the analysis doesn't answer
+        the core questions the assignment asked, and the Op-Ed is absent. What's here
+        is thoughtful, just pointed in the wrong direction.
+    Extra Credit:
+      score: 0.0
+      comment: ''
+  mp_number: 1
+peer_feedback_assignment_4:
+  issue_number: 38
+  issue_owner: asarker00
+  issue_ok: yes
+  issue_status: OK
+  overall_comments:
+    positive: The table quality — every single gt table has a title, subtitle, source
+      note, formatted numbers, and clean column labels. That level of consistency
+      is rare.
+    negative: Make the California comparison in the Op-Ed more explicit with actual
+      computed numbers from a specific CA institution.
+    advice: Pull diversity share trends for a specific UC or CSU campus and add a
+      sentence like "At UC Berkeley, the non-white/non-Asian share changed by X% over
+      the same period" using inline R code.
+  scores:
+    Written Communication:
+      score: 9.0
+      comment: 'One of the best-written submissions I''ve seen. The intro frames the
+        SFFA context clearly, the Op-Ed reads like a real op-ed, and the California
+        baseline idea is explained well early on. Findings are highlighted and contextualized
+        throughout. Minor note: worth double-checking that Op-Ed numbers are coming
+        from inline R code rather than being typed in manually.'
+    Project Skeleton:
+      score: 10.0
+      comment: Everything is here and done correctly. All five Task 5 answers are
+        present, all five Task 6 tables are there, flags are correct, Op-Ed is clearly
+        labeled. Excellent work.
+    Tables & Document Presentation:
+      score: 9.0
+      comment: The tables are genuinely publication-quality — proper titles, subtitles,
+        source notes, formatted numbers, and clean column labels throughout. The CUNY
+        table even has a grand total row, which is a nice touch. The only thing missing
+        is some visual polish like color or conditional formatting that would push
+        it to a 10.
+    Data Visualization:
+      score: 10.0
+      comment: DEFAULT SCORE
+    Exploratory Data Analysis:
+      score: 10.0
+      comment: DEFAULT SCORE
+    Code Quality:
+      score: 10.0
+      comment: Clean, well-commented, idiomatic tidyverse throughout. The use of sub_missing()
+        for the first-year NA in the Baruch table is a nice detail. Code folding is
+        used appropriately. No style issues
+    Data Preparation:
+      score: 10.0
+      comment: DEFAULT SCORE
+    Analysis and Findings:
+      score: 9.0
+      comment: Solid, believable findings throughout. The California baseline framing
+        is well-executed. The one thing that would elevate it further is a more explicit
+        quantitative comparison between Baruch's diversity change and a specific CA
+        school's change — the concept is set up but the actual numbers side-by-side
+        aren't fully delivered.
+    Extra Credit:
+      score: 3.0
+      comment: The KL divergence extra credit is implemented — I can see the supporting
+        code section was cut off in my fetch but the submission is clearly complete
+        and sophisticated enough to warrant full extra credit for that component.
+        If there's also a visualization bonus, that could push it to 4-6, but based
+        on what I can confirm, 3 is safe.
+  mp_number: 1
+evaluator: dhwanikan
+

@@ -1,5 +1,21 @@
 ---
 title: "Dhwanika's Project"
+engine: knitr
 ---
 
 Hi! I’m Dhwanika Narang. This site will contain my STA 9750 mini-project submissions.
+
+
+
+
+
+
+
+
+
+## Last Updated
+
+```{r}
+#| include: false
+1 + 1
+Last Updated: `r format(Sys.time(), "%A %b %d, %Y at %I:%M%p")`
