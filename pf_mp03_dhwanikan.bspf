@@ -1,0 +1,237 @@
+peer_feedback_assignment_1:
+  issue_number: 69
+  issue_owner: miggonzalz
+  issue_ok: yes
+  issue_status: OK
+  overall_comments:
+    positive: The metro connection analysis in Q10 was a genuine highlight. Identifying
+      that 95.3% of Trenton-Princeton in-migration comes from the NYC metro is a specific,
+      interesting finding that goes beyond just answering the question.
+    negative: |2-
+
+      The population projection model needs to be fixed. The output shows the same national population every single year from 2025 to 2030, which means the growth and migration terms are not being applied correctly.
+    advice: Fix the case_when in the 2024 migration cleaning code to map all 50 states
+      instead of just Alabama and Alaska. Once the state labels are correct, revisit
+      the projection loop and make sure both the natural growth term and the gravity
+      migration term are actually being added to each state population each year.
+  scores:
+    Written Communication:
+      score: 5.0
+      comment: The introduction is clear and the motivation for using ACS migration
+        data is well-stated. However, EDA answers read like lists of facts rather
+        than a cohesive narrative report. Key findings lack context and interpretation.
+        The final write-up is thin and underdeveloped and does not connect back to
+        the quantitative analysis or provide a convincing advertising proposal.
+    Project Skeleton:
+      score: 4.0
+      comment: All 10 EDA questions are answered and data acquisition tasks are attempted.
+        Task 7 is critically flawed as the projection loop produces identical populations
+        every year from 2025 to 2030, meaning the natural growth and gravity migration
+        components were not correctly implemented. The apportionment results follow
+        from this broken model. Task 9 lacks any quantified estimate of migration
+        needed to gain a congressional seat.
+    Tables & Document Presentation:
+      score: 6.0
+      comment: Tables use gt formatting with reasonable column labels and integer
+        formatting. The apportionment table is clean and readable. Several figures
+        appear as broken image links in the rendered HTML. The Q8 table mixes international
+        and domestic migration without clear separation. Column names could be more
+        descriptive throughout.
+    Data Visualization:
+      score: 4.0
+      comment: Several figures are broken and do not render in the published HTML.
+        The figures that do render are functional but lack subtitles, captions, and
+        polished axis formatting. The animated GIF is a creative touch. Overall, visualization
+        quality is inconsistent.
+    Exploratory Data Analysis:
+      score: 7.0
+      comment: All 10 EDA questions area addressed and cover both state-level and
+        metro level migration patters. the NYC metro connection analysis is a strong
+        finding. Answers lack narrative and findings seem not too plausible without
+        further comment.
+    Code Quality:
+      score: 5.0
+      comment: Variable names are sensible and overall structure is readable. There
+        is a critical bug in the 2024 cleaning code where only Alabama and Alaska
+        are mapped in the case-when and everything else is unknown. the code is longer
+        than it needs to be and comments don't say why the code was produced.
+    Data Preparation:
+      score: 3.0
+      comment: Caching logic is implemented and the tidycensus prohibition is respected,
+        which are both good signs. The big problem is the 2024 state name mapping
+        in the case_when, where only Alabama and Alaska are correctly mapped and everything
+        else defaults to "UNKNOWN." That means 48 states have corrupted labels in
+        the combined migration table, which flows into all the downstream analysis.
+    Analysis and Findings:
+      score: 3.0
+      comment: The projection model produces flat populations year over year, which
+        is clearly incorrect and suggests the growth and migration terms were not
+        properly applied. The apportionment result of 25 seats for NY looks plausible
+        on the surface but is built on a broken model. The advertising proposal is
+        missing any quantified estimate of how much migration would be needed to gain
+        a seat.
+    Extra Credit:
+      score: 0.0
+      comment: none of them were completed.
+  mp_number: 3
+peer_feedback_assignment_2:
+  issue_number: 77
+  issue_owner: jackeee101
+  issue_ok: yes
+  issue_status: OK
+  overall_comments:
+    positive: Task 9 is genuinely well done. The advertising strategy is specific,
+      creative, and clearly thought through. The idea of investing in pop-up events
+      with popular IPs to draw visitors who might fall in love with the city is a
+      concrete and interesting proposal that goes beyond just restating the data.
+    negative: There are no data visualizations at all. Every single finding is communicated
+      through a table, which makes the report harder to read and misses a core rubric
+      element entirely.
+    advice: Add at least a few ggplot bar charts, one showing top in-migration and
+      out-migration states for New York and one showing projected population growth
+      by state. Also fix the git merge conflict markers in the rendered HTML before
+      submitting and replace the raw decimal proportions in Q10 with formatted percentages
+      using fmt_percent.
+  scores:
+    Written Communication:
+      score: 6.0
+      comment: The introduction is brief but clear and the final write-up in Task
+        9 is the strongest part of the report. It reads naturally and tells a coherent
+        story about the advertising strategy. However, the EDA section reads like
+        a list of code outputs with no narrative connecting the findings. Adding a
+        few sentences of interpretation after each table would go a long way toward
+        making this feel like a real report.
+    Project Skeleton:
+      score: 7.0
+      comment: All 10 EDA questions are answered and Tasks 1 through 9 are all attempted.
+        The projection model in Task 7 produces plausible growing populations, which
+        is a clear improvement over many submissions. However, the projection formula
+        for 2026 onward adds mji directly as a scalar rather than computing proper
+        migration flows. The apportionment result of 27 seats for New York is reasonable
+        and the Huntington-Hill method is correctly applied.
+    Tables & Document Presentation:
+      score: 6.0
+      comment: Tables are consistently formatted with gt and have readable column
+        labels and headers. However, there are git merge conflict markers scattered
+        throughout the rendered HTML, which is distracting and unprofessional. The
+        Q10 table shows proportions as raw decimals instead of percentages and the
+        column is misspelled as "Porportion." Those are easy fixes that would improve
+        the polish significantly.
+    Data Visualization:
+      score: 3.0
+      comment: There are essentially no data visualizations in this submission. All
+        findings are communicated through tables only. The rubric explicitly asks
+        for figures and this is a significant gap. Bar charts, maps, or even a simple
+        ggplot showing migration flows would have made the analysis much more compelling
+        and easier to read
+    Exploratory Data Analysis:
+      score: 8.0
+      comment: 'All 10 EDA questions are answered with clean, correct-looking results.
+        The findings are plausible: New Jersey and Florida as top NY migration partners,
+        Texas and Florida leading net migration nationally, and the metro-level analysis
+        is solid. The main weakness is the lack of narrative. Results are presented
+        but rarely interpreted or connected to each other.'
+    Code Quality:
+      score: 6.0
+      comment: Variable names are descriptive and the pipeline structure using dplyr
+        is clean and consistent. The main issue is that str_detect(year_current, "2024")
+        is used to filter a numeric column, which works but is bad practice. Using
+        year_current == 2024 is clearer and more correct. The git merge conflict markers
+        also suggest the document was not reviewed before rendering.
+    Data Preparation:
+      score: 7.0
+      comment: Caching is properly implemented for all three data sources and the
+        tidycensus prohibition is respected for migration flows. The 2023 and 2024
+        files are downloaded, cleaned, and combined correctly. The metro API call
+        uses a 2023 endpoint rather than the 2020 ACS-5 endpoint specified in the
+        assignment, which may introduce data inconsistencies, but the overall pipeline
+        is solid.
+    Analysis and Findings:
+      score: 6.0
+      comment: The projection model produces growing state populations, which is a
+        good sign, but the formula for 2026 onward adds mji directly as a scalar rather
+        than computing migration flows properly, which inflates projections. New York's
+        27-seat result is plausible. The advertising strategy in Task 9 is thoughtful
+        and includes a rough migration target of 600k to 1 million, which addresses
+        the quantification requirement.
+    Extra Credit:
+      score: 0.0
+      comment: none opportunities were completed, no growth model.
+  mp_number: 3
+peer_feedback_assignment_3:
+  issue_number: 82
+  issue_owner: meyereisner
+  issue_ok: yes
+  issue_status: OK
+  overall_comments:
+    positive: The Task 9 memo is the best in the cohort. It computes the exact seat
+      threshold, proposes a tiered campaign with realistic per-tier migration targets,
+      identifies vulnerable donor states, and closes with a cost-benefit argument
+      for the campaign budget. It reads like actual policy analysis.
+    negative: The submission is almost entirely tables outside of the Q10 chart. Adding
+      visualizations for state growth projections or migration flow comparisons would
+      round out an already strong submission.
+    advice: ''
+  scores:
+    Written Communication:
+      score: 9.0
+      comment: The final memo in Task 9 is genuinely excellent. It reads like a real
+        policy document, quantifies the seat threshold, breaks the advertising strategy
+        into three tiers with specific targets, and even includes a cost-benefit argument
+        for the campaign. The EDA narrative is also above average, with brief interpretations
+        after each result. A few minor typos and informal phrases ("who wouldn't want
+        to work in NY??") keep it from a perfect score.
+    Project Skeleton:
+      score: 10.0
+      comment: All tasks are completed fully and correctly. The data acquisition functions
+        are well-structured, spot checks against raw Excel values are included and
+        pass, the projection model is properly implemented with the gravity model
+        feeding back into each year's population, and Task 9 includes a computed seat
+        threshold and tiered campaign strategy. This is one of the most complete skeletons
+        in the class.
+    Tables & Document Presentation:
+      score: 9.0
+      comment: 'Tables are clean, well-labeled, and consistently formatted with gt
+        including subtitles, source notes, and conditional color coding in the apportionment
+        table. The grand summary row in Task 8 is a professional touch. Minor deduction
+        for a few package warning messages left in the rendered output that could
+        have been suppressed with message: false.'
+    Data Visualization:
+      score: 8.0
+      comment: The two-panel patchwork chart in Q10 is the highlight, clearly separating
+        commuter belt metros from long-distance connections. It is polished, labeled,
+        and includes percent annotations on the bars. The rest of the EDA relies on
+        tables, so there are no visualizations for migration flows, state growth rates,
+        or projections. Adding even one or two more charts would push this higher.
+    Exploratory Data Analysis:
+      score: 10.0
+      comment: All 10 questions are answered thoroughly and correctly. Findings are
+        plausible and well-interpreted throughout. The Q7 Vermont result (897% of
+        population growth from migration) is flagged and contextualized rather than
+        ignored. The Q10 analysis correctly isolates long-distance affinities from
+        commuter belt noise, which shows real analytical thinking beyond the minimum.
+    Code Quality:
+      score: 9.0
+      comment: The code is well organized and heavily commented. The use of spot checks
+        was excellent. Only point lost was because warings were left in the output.
+    Data Preparation:
+      score: 10.0
+      comment: Caching is correctly implemented for all sources. The 2024 and 2023
+        Excel files are parsed carefully using named ranges, and the vec_interleave
+        approach for handling alternating estimate/MOE columns in the 2023 file is
+        clever and correct. State names are mapped to abbreviations consistently throughout.
+        The correct 2020 ACS-5 endpoint is used for metro flows. All spot checks pass.
+    Analysis and Findings:
+      score: 10.0
+      comment: The projection model is correctly implemented and produces realistic
+        growing state populations with a national total of 392M by 2030. New York's
+        projected loss of two seats is well-supported and the 350,000-resident threshold
+        to recover one seat is computed directly using the Huntington-Hill function.
+        The tiered advertising strategy with specific migrant counts per tier is quantified
+        and grounded in the data. This is the best Task 9 of any submission reviewed.
+    Extra Credit:
+      score: 0.0
+      comment: '0'
+  mp_number: 3
+evaluator: dhwanikan
+
