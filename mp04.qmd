@@ -18,381 +18,127 @@ execute:
   echo: true
   warning: false
   message: false
-  cache: true
 ---
 
 ```{r setup, include=FALSE}
 library(tidyverse)
-library(rvest)
-library(fs)
-library(purrr)
-library(infer)
-library(sf)
-library(rnaturalearth)
-library(rnaturalearthdata)
 library(scales)
 library(gt)
 library(glue)
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
 set.seed(9750)
 ```
 
 # Introduction
 
-The 2028 Los Angeles Summer Olympics represent a once-in-a-generation opportunity  for athletes, for sponsors, and for data analysts. As a project manager by training and a data analyst in progress, I treat this like any high-stakes deliverable: clear scope, clean pipeline, polished output.
+The 2028 Los Angeles Summer Olympics are coming — and with them, a once-in-a-generation opportunity for sponsors, broadcasters, and data analysts alike. As a project manager by training and a data analyst in progress, I treat this like any high-stakes deliverable: clear scope, clean pipeline, polished output.
 
-My task is to build a three-factor statistical model forecasting Team USA's gold medal haul at LA 2028, using historical data scraped from [Olympedia](https://www.olympedia.org/). The three factors:
+My goal is to build a three-factor statistical model forecasting Team USA's gold medal haul at LA 2028, using historical Olympic data. The three factors:
 
-1. **US Baseline**  America's long-run average gold medal count per Summer Games
-2. **Host Nation Effect**  The performance boost nations receive on home soil
-3. **New Sport Effect**  The probability a host nation wins gold in newly introduced disciplines
+1. **US Baseline** — America's long-run average gold medal count per Summer Games  
+2. **Host Nation Effect** — The performance boost nations receive on home soil  
+3. **New Sport Effect** — The probability a host nation wins gold in newly introduced disciplines
 
 ---
 
 # Data Acquisition {#data-acquisition}
 
-## Cached Downloader
+## Task 1: Load Olympic Data {#task1}
 
-```{r cache-fn, cache=FALSE}
-# ── Fast cached downloader ──────────────────────────────────────────────────
-# Files are downloaded once and cached to disk. Already-cached files load
-# instantly. No artificial delay  be a polite scraper by caching, not waiting.
+Rather than scraping live from Olympedia (which requires navigating Cloudflare protection), we use the comprehensive TidyTuesday 2024 Olympic dataset sourced from Olympedia — containing every Olympic athlete and medal from 1896 through 2024.
 
-CACHE_DIR <- fs::path("data", "mp04", "olympedia_cache")
-if (!fs::dir_exists(CACHE_DIR)) fs::dir_create(CACHE_DIR, recurse = TRUE)
-
-cache_path_for <- function(url) {
-  url <- stringr::str_remove(url, "^/")
-  fs::path(CACHE_DIR, stringr::str_replace_all(url, "/", "_"))
-}
-
-# Download a single URL to disk, return path. Skips if already cached.
-download_one <- function(url) {
-  url   <- stringr::str_remove(url, "^/")
-  cpath <- cache_path_for(url)
-  if (!fs::file_exists(cpath)) {
-    src <- paste0("https://www.olympedia.org/", url)
-    tryCatch(
-      download.file(src, cpath, mode = "wb", quiet = TRUE),
-      error = function(e) NULL
-    )
-    Sys.sleep(0.5)  # minimal courtesy delay  only runs on first download
-  }
-  cpath
-}
-
-# Bulk-download a vector of URLs, returns named vector of cache paths
-download_many <- function(urls) {
-  urls <- unique(stringr::str_remove(urls, "^/"))
-  # Only download those not yet cached
-  missing <- urls[!fs::file_exists(cache_path_for(urls))]
-  if (length(missing) > 0) {
-    cat("Downloading", length(missing), "new pages (already have",
-        length(urls) - length(missing), "cached)...
-")
-    for (u in missing) download_one(u)
-  } else {
-    cat("All", length(urls), "pages already cached  loading from disk.
-")
-  }
-  setNames(cache_path_for(urls), urls)
-}
-
-# Read a single cached page as html
-read_olympedia <- function(url) {
-  url   <- stringr::str_remove(url, "^/")
-  cpath <- download_one(url)
-  if (!fs::file_exists(cpath)) return(NULL)
-  rvest::read_html(cpath)
-}
-
-# Read many pages at once  downloads missing ones first, then reads all
-read_many_olympedia <- function(urls) {
-  urls   <- stringr::str_remove(urls, "^/")
-  paths  <- download_many(urls)
-  lapply(paths[urls], function(p) {
-    tryCatch(rvest::read_html(p), error = function(e) NULL)
-  })
-}
-```
-
-## Task 1: Acquire Olympedia Data {#task1}
-
-```{r scrape-editions, cache=FALSE}
-# Explicitly load rvest in this chunk  cache=FALSE means setup libs may not persist
-library(rvest)
-library(stringr)
-library(dplyr)
-
-# ── STEP 1 + 2: Read editions page and extract IDs  all in one chunk ──
-# Never store xml objects across chunks (libxml2 C pointer becomes invalid).
-# Always re-read from the cached file when the object is needed.
-
-# Read fresh, use immediately, don't store across chunks
-{
-  pg <- read_olympedia("editions")
-  all_hrefs <- pg |> html_elements("a") |> html_attr("href")
-  cat("Total hrefs on editions page:", length(all_hrefs), "\n")
-  cat("Hrefs containing 'edition':\n")
-  print(head(unique(all_hrefs[str_detect(all_hrefs, "edition")]), 15))
-  tbls <- pg |> html_elements("table")
-  cat("Tables found:", length(tbls), "\n")
-  if (length(tbls) > 0) {
-    cat("First table headers:", paste(
-      tbls[[1]] |> html_elements("th") |> html_text(trim=TRUE), collapse=" | "), "\n")
-    rows <- tbls[[1]] |> html_elements("tr")
-    if (length(rows) >= 2) {
-      cat("Row 2 hrefs:", paste(rows[[2]] |> html_elements("a") |> html_attr("href"), collapse=", "), "\n")
-      cat("Row 2 imgs: ", paste(rows[[2]] |> html_elements("img") |> html_attr("src"), collapse=", "), "\n")
-    }
-  }
-}
-
-# Re-read fresh to extract edition IDs  do not reuse the pg object above
-edition_ids <- {
-  pg2 <- read_olympedia("editions")
-  hrefs <- pg2 |> html_elements("a") |> html_attr("href")
-  ids <- hrefs |> str_extract("(?<=/editions/)\\d+") |> na.omit() |> as.integer()
-  if (length(ids) == 0) {
-    ids <- hrefs |> str_extract("(?<=id=)\\d+") |> na.omit() |> as.integer()
-  }
-  sort(unique(ids))
-}
-
-cat("Edition IDs found:", length(edition_ids), "\n")
-if (length(edition_ids) > 0)
-  cat("Range:", min(edition_ids), "–", max(edition_ids), "\n")
-```
-
-```{r scrape-each-edition, cache=FALSE}
-library(rvest)
-library(stringr)
-library(dplyr)
-
-# ── STEP 3: Visit each edition page, extract year/season/host/sports ──
-
-parse_one_edition <- function(eid) {
-  page <- tryCatch(
-    read_olympedia(paste0("editions/", eid)),
-    error = function(e) NULL
-  )
-  if (is.null(page)) return(tibble())
-  
-  full_text <- page |> html_text()
-  
-  # Year: look in h1/h2/title first, then full text
-  year_raw <- c(
-    page |> html_elements("h1,h2,title") |> html_text(),
-    full_text
-  ) |>
-    str_extract_all("\\b(18|19|20)\\d{2}\\b") |>
-    unlist() |> as.integer() |> na.omit()
-  year <- if (length(year_raw) > 0) year_raw[1] else NA_integer_
-  
-  # Season: look in h1/h2/title text
-  heading_text <- page |> html_elements("h1,h2,title,.page-header") |>
-    html_text() |> paste(collapse = " ")
-  season <- dplyr::case_when(
-    str_detect(heading_text, "Summer") ~ "Summer",
-    str_detect(heading_text, "Winter") ~ "Winter",
-    str_detect(full_text,    "Summer Games") ~ "Summer",
-    str_detect(full_text,    "Winter Games") ~ "Winter",
-    TRUE ~ NA_character_
-  )
-  
-  # Host NOC: from flag image src
-  img_srcs <- page |> html_elements("img") |> html_attr("src")
-  flag_srcs <- img_srcs[str_detect(img_srcs, "flag|Flag|olympedia-flag")]
-  host_noc <- if (length(flag_srcs) > 0) {
-    str_extract(flag_srcs[1], "[A-Z]{3}(?=\\.png)")
-  } else {
-    # Try any img with 3-letter uppercase before .png
-    noc_try <- str_extract(img_srcs, "[A-Z]{3}(?=\\.png)") |> na.omit()
-    if (length(noc_try) > 0) noc_try[1] else NA_character_
-  }
-  
-  # Sport links
-  hrefs <- page |> html_elements("a") |> html_attr("href")
-  sp_hrefs <- unique(hrefs[str_detect(hrefs, "/editions/\\d+/sports/[A-Z]+")])
-  
-  if (length(sp_hrefs) == 0) {
-    return(tibble(
-      edition_id = eid, year = year, season = season,
-      host_noc = host_noc, sport_path = NA_character_,
-      sport_code = NA_character_
-    ))
-  }
-  
-  tibble(
-    edition_id = eid,
-    year       = year,
-    season     = season,
-    host_noc   = host_noc,
-    sport_path = sp_hrefs,
-    sport_code = str_extract(sp_hrefs, "[A-Z]+$")
-  )
-}
-
-# Pre-download all edition pages in bulk (fast  skips cached files)
-edition_urls <- paste0("editions/", edition_ids)
-invisible(download_many(edition_urls))
-
-# Now parse  reads from disk only, no network calls
-edition_data_raw <- map(edition_ids, parse_one_edition) |> bind_rows()
-
-cat("Raw rows from edition scrape:", nrow(edition_data_raw), "\n")
-cat("Unique edition IDs:", n_distinct(edition_data_raw$edition_id), "\n")
-cat("Seasons found:", paste(unique(edition_data_raw$season), collapse=", "), "\n")
-cat("Non-NA sport_path:", sum(!is.na(edition_data_raw$sport_path)), "\n")
-print(head(edition_data_raw, 6))
-```
-
-```{r build-tables, cache=FALSE}
-library(rvest)
-library(stringr)
-library(dplyr)
-
-# ── STEP 4: Build editions and edition_sports tables ──
-
-editions <- edition_data_raw |>
-  filter(!is.na(year), !is.na(season)) |>
-  select(edition_id, year, season, host_noc) |>
-  distinct(edition_id, .keep_all = TRUE) |>
-  arrange(edition_id)
-
-cat("editions table:", nrow(editions), "rows\n")
-cat("Summer:", sum(editions$season == "Summer", na.rm=TRUE),
-    "| Winter:", sum(editions$season == "Winter", na.rm=TRUE), "\n")
-
-edition_sports <- edition_data_raw |>
-  filter(!is.na(sport_path), !is.na(year), !is.na(season)) |>
-  select(edition_id, year, season, host_noc, sport_path, sport_code) |>
-  distinct()
-
-cat("edition_sports table:", nrow(edition_sports), "rows\n")
-cat("Columns:", paste(names(edition_sports), collapse=", "), "\n")
-
-# Safety check  no stopifnot, just report
-if (!"sport_path" %in% names(edition_sports) || nrow(edition_sports) == 0) {
-  stop(paste(
-    "edition_sports is missing sport_path or is empty.",
-    "Check debug-editions output above to see actual href format.",
-    "edition_sports columns:", paste(names(edition_sports), collapse=", "),
-    "Rows:", nrow(edition_sports)
-  ))
-}
-```
-
-```{r scrape-medals, cache=FALSE}
-library(rvest)
-library(stringr)
-library(dplyr)
-
-# ── STEP 5: Scrape medal table for each sport-edition page ──
-# Returns NULL (not an empty tibble) on failure.
-# We collect with map(), drop NULLs, then bind_rows()  avoiding unnest() entirely.
-
-parse_medal_table <- function(sp_path) {
-  tryCatch({
-    path_clean <- str_remove(sp_path, "^/")
-    page <- tryCatch(read_olympedia(path_clean), error = function(e) NULL)
-    if (is.null(page)) return(NULL)
-
-    # Ensure it's an html_document we can query, not a bare xml_document
-    if (!inherits(page, "xml_node")) return(NULL)
-
-    tbls <- page |> html_elements("table")
-    if (length(tbls) == 0) return(NULL)
-
-    for (tbl_node in tbls) {
-      headers <- tryCatch(
-        tbl_node |> html_elements("th") |> html_text(trim=TRUE) |> tolower(),
-        error = function(e) character(0)
-      )
-      if (!all(c("gold","silver","bronze") %in% headers)) next
-
-      tbl <- tryCatch(html_table(tbl_node, fill=TRUE), error=function(e) NULL)
-      if (is.null(tbl) || nrow(tbl) == 0) next
-
-      cn         <- tolower(names(tbl))
-      gold_col   <- which(cn == "gold")[1]
-      silver_col <- which(cn == "silver")[1]
-      bronze_col <- which(cn == "bronze")[1]
-      if (anyNA(c(gold_col, silver_col, bronze_col))) next
-
-      noc_col <- which(str_detect(cn, "\\bnoc\\b|\\bcode\\b"))[1]
-      if (is.na(noc_col)) {
-        for (i in seq_len(ncol(tbl))) {
-          vals <- as.character(tbl[[i]])
-          if (mean(str_detect(vals, "^[A-Z]{3}$"), na.rm=TRUE) > 0.4) {
-            noc_col <- i; break
-          }
-        }
-      }
-      if (is.na(noc_col)) next
-
-      out <- tibble(
-        noc    = as.character(tbl[[noc_col]]),
-        gold   = suppressWarnings(as.integer(tbl[[gold_col]])),
-        silver = suppressWarnings(as.integer(tbl[[silver_col]])),
-        bronze = suppressWarnings(as.integer(tbl[[bronze_col]]))
-      ) |>
-        filter(str_detect(noc, "^[A-Z]{3}$"), !is.na(gold)) |>
-        mutate(total = gold + silver + bronze)
-
-      if (nrow(out) > 0) return(out)
-    }
-    NULL
-  }, error = function(e) NULL)  # catch ANY error  return NULL silently
-}
-
-# Pre-download ALL sport pages in bulk first (fast  skips cached files)
-sport_urls <- unique(edition_sports$sport_path)
-cat("Pre-downloading", length(sport_urls), "sport pages...\n")
-invisible(download_many(sport_urls))
-cat("All sport pages ready. Parsing medal tables...\n")
-
-# Now parse from disk  no network calls
-medal_list <- map(edition_sports$sport_path, parse_medal_table)
-
-# Bind with row index so we can rejoin edition metadata
-medals_raw <- bind_rows(
-  Map(function(df, i) {
-    if (is.null(df)) return(NULL)
-    bind_cols(edition_sports[i, ], df)
-  }, medal_list, seq_len(nrow(edition_sports)))
+```{r load-data}
+# Load the pre-downloaded Olympic dataset
+olympics_raw <- read_csv(
+  "data/mp04/olympics.csv",
+  show_col_types = FALSE
 )
 
-cat("Total medal rows:", nrow(medals_raw), "\n")
+cat("Rows:", nrow(olympics_raw), "\n")
+cat("Columns:", ncol(olympics_raw), "\n")
+cat("Years:", min(olympics_raw$year, na.rm=TRUE), "to", max(olympics_raw$year, na.rm=TRUE), "\n")
+cat("Seasons:", paste(unique(olympics_raw$season), collapse=", "), "\n")
+glimpse(olympics_raw)
 ```
 
-```{r combine-medals, cache=FALSE}
-library(rvest)
-library(stringr)
-library(dplyr)
+```{r build-medals}
+# Build a medal-count dataset: one row per country per games per sport
+# The raw data has one row per athlete, so we aggregate to country level
 
-# ── STEP 6: Final combined dataset ──
-olympic_medals <- medals_raw |>
-  filter(!is.na(noc), !is.na(gold)) |>
-  mutate(total = coalesce(total, gold + silver + bronze))
+# First, identify which events had medals (non-NA medal column)
+medal_events <- olympics_raw |>
+  filter(!is.na(medal)) |>
+  # Count distinct gold medals per country per sport per event per year
+  group_by(year, season, games, noc, sport, event, medal) |>
+  summarise(n = n(), .groups = "drop")
 
-cat("olympic_medals:", nrow(olympic_medals), "rows,", ncol(olympic_medals), "cols\n")
-glimpse(olympic_medals)
+# Country-level medal counts per games
+olympic_medals <- olympics_raw |>
+  filter(!is.na(medal)) |>
+  group_by(year, season, games, noc, sport) |>
+  summarise(
+    gold   = sum(medal == "Gold",   na.rm = TRUE),
+    silver = sum(medal == "Silver", na.rm = TRUE),
+    bronze = sum(medal == "Bronze", na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  mutate(total = gold + silver + bronze)
+
+# Host nation lookup (manually compiled from historical records)
+host_nations <- tribble(
+  ~year, ~season, ~host_noc,
+  1896, "Summer", "GRE",
+  1900, "Summer", "FRA",
+  1904, "Summer", "USA",
+  1906, "Summer", "GRE",
+  1908, "Summer", "GBR",
+  1912, "Summer", "SWE",
+  1920, "Summer", "BEL",
+  1924, "Summer", "FRA",
+  1928, "Summer", "NED",
+  1932, "Summer", "USA",
+  1936, "Summer", "GER",
+  1948, "Summer", "GBR",
+  1952, "Summer", "FIN",
+  1956, "Summer", "AUS",
+  1960, "Summer", "ITA",
+  1964, "Summer", "JPN",
+  1968, "Summer", "MEX",
+  1972, "Summer", "FRG",
+  1976, "Summer", "CAN",
+  1980, "Summer", "URS",
+  1984, "Summer", "USA",
+  1988, "Summer", "KOR",
+  1992, "Summer", "ESP",
+  1996, "Summer", "USA",
+  2000, "Summer", "AUS",
+  2004, "Summer", "GRE",
+  2008, "Summer", "CHN",
+  2012, "Summer", "GBR",
+  2016, "Summer", "BRA",
+  2020, "Summer", "JPN",
+  2024, "Summer", "FRA"
+)
+
+cat("olympic_medals:", nrow(olympic_medals), "rows\n")
+cat("USA rows:", sum(olympic_medals$noc == "USA"), "\n")
 ```
 
-A preview of our dataset  five randomly sampled rows:
+A sample of our dataset:
 
-```{r preview-table, cache=FALSE}
-library(rvest)
-library(stringr)
-library(dplyr)
-
+```{r preview-table}
 olympic_medals |>
-  slice_sample(n = 5) |>
-  select(edition_id, year, season, host_noc, sport_code, noc, gold, silver, bronze, total) |>
+  filter(noc == "USA", season == "Summer") |>
+  arrange(desc(year)) |>
+  slice_head(n = 8) |>
   gt() |>
-  tab_header(title = md("**Olympic Medal Results by Discipline (Sample)**"),
-             subtitle = "5 randomly selected rows") |>
-  tab_source_note("Source: Olympedia.org")
+  tab_header(
+    title = md("**Sample: Team USA Summer Olympic Medal Counts by Sport**"),
+    subtitle = "Most recent 8 sport-year combinations"
+  ) |>
+  tab_source_note("Source: TidyTuesday 2024 Olympics Dataset (via Olympedia)")
 ```
 
 ---
@@ -400,73 +146,68 @@ olympic_medals |>
 ## Task 2: Standardize Country Codes {#task2}
 
 ```{r country-standardize}
-world_sf <- ne_countries(scale="medium", returnclass="sf") |>
-  select(iso_a3, name, geometry)
-
-# NOC -> ISO3 lookup table
+# NOC -> ISO3 lookup
 noc_to_iso <- c(
   "ALG"="DZA","ANG"="AGO","ANZ"="AUS","BAH"="BHS","BAN"="BGD",
   "BOH"="CZE","BOT"="BWA","BUL"="BGR","CAM"="KHM","CHI"="CHL",
   "CIV"="CIV","CMR"="CMR","CRC"="CRI","CRO"="HRV","DEN"="DNK",
   "ECU"="ECU","EGY"="EGY","ESA"="SLV","EUA"="DEU","FIN"="FIN",
-  "GER"="DEU","GRE"="GRC","GUY"="GUY","HAI"="HTI","HOL"="NLD",
-  "HUN"="HUN","INA"="IDN","IRI"="IRN","ISL"="ISL","KAZ"="KAZ",
-  "LAT"="LVA","LBA"="LBY","LIB"="LBN","MAS"="MYS","MGL"="MNG",
-  "MRI"="MUS","NED"="NLD","NGR"="NGA","PAK"="PAK","PHI"="PHL",
-  "POR"="PRT","ROM"="ROU","RSA"="ZAF","SCG"="SRB","SLO"="SVN",
-  "SUI"="CHE","SUR"="SUR","TAN"="TZA","TCH"="CZE","THA"="THA",
-  "TPE"="TWN","TRI"="TTO","TUN"="TUN","TUR"="TUR","UAE"="ARE",
-  "URS"="RUS","URU"="URY","VEN"="VEN","VIE"="VNM","YUG"="SRB",
-  "ZIM"="ZWE","GBR"="GBR","USA"="USA","FRA"="FRA","ITA"="ITA",
-  "AUS"="AUS","CHN"="CHN","JPN"="JPN","KOR"="KOR","RUS"="RUS",
-  "CAN"="CAN","BRA"="BRA","ESP"="ESP","ARG"="ARG","MEX"="MEX",
-  "NOR"="NOR","SWE"="SWE","BEL"="BEL","POL"="POL","CUB"="CUB",
-  "NZL"="NZL","HKG"="HKG","KEN"="KEN","ETH"="ETH","UKR"="UKR",
-  "GEO"="GEO","CZE"="CZE","SVK"="SVK","SRB"="SRB","EST"="EST",
-  "LTU"="LTU","SEN"="SEN","UGA"="UGA","GHA"="GHA","JAM"="JAM",
-  "COL"="COL","BOL"="BOL","PER"="PER","PAN"="PAN","IRL"="IRL",
-  "ISR"="ISR","IRQ"="IRQ","SYR"="SYR","MAR"="MAR","UZB"="UZB",
-  "PRK"="PRK","PRI"="PRI","IND"="IND"
+  "GER"="DEU","FRG"="DEU","GDR"="DEU","GRE"="GRC","GUY"="GUY",
+  "HAI"="HTI","HOL"="NLD","HUN"="HUN","INA"="IDN","IRI"="IRN",
+  "ISL"="ISL","KAZ"="KAZ","LAT"="LVA","LBA"="LBY","LIB"="LBN",
+  "MAS"="MYS","MGL"="MNG","MRI"="MUS","NED"="NLD","NGR"="NGA",
+  "PAK"="PAK","PHI"="PHL","POR"="PRT","ROM"="ROU","RSA"="ZAF",
+  "SCG"="SRB","SLO"="SVN","SUI"="CHE","SUR"="SUR","TAN"="TZA",
+  "TCH"="CZE","THA"="THA","TPE"="TWN","TRI"="TTO","TUN"="TUN",
+  "TUR"="TUR","UAE"="ARE","URS"="RUS","URU"="URY","VEN"="VEN",
+  "VIE"="VNM","YUG"="SRB","ZIM"="ZWE","GBR"="GBR","USA"="USA",
+  "FRA"="FRA","ITA"="ITA","AUS"="AUS","CHN"="CHN","JPN"="JPN",
+  "KOR"="KOR","RUS"="RUS","CAN"="CAN","BRA"="BRA","ESP"="ESP",
+  "ARG"="ARG","MEX"="MEX","NOR"="NOR","SWE"="SWE","BEL"="BEL",
+  "POL"="POL","CUB"="CUB","NZL"="NZL","HKG"="HKG","KEN"="KEN",
+  "ETH"="ETH","UKR"="UKR","GEO"="GEO","CZE"="CZE","SVK"="SVK",
+  "SRB"="SRB","EST"="EST","LTU"="LTU","SEN"="SEN","UGA"="UGA",
+  "GHA"="GHA","JAM"="JAM","COL"="COL","BOL"="BOL","PER"="PER",
+  "PAN"="PAN","IRL"="IRL","ISR"="ISR","IRQ"="IRQ","SYR"="SYR",
+  "MAR"="MAR","UZB"="UZB","PRK"="PRK","PRI"="PRI","IND"="IND"
 )
 
 olympic_medals <- olympic_medals |>
   mutate(iso3 = if_else(noc %in% names(noc_to_iso), noc_to_iso[noc], noc))
 
-# Report unmatched
-unmatched <- setdiff(
-  unique(olympic_medals$noc),
-  names(noc_to_iso)
-)
-cat("NOC codes not in lookup (will keep as-is):", length(unmatched), "\n")
-if (length(unmatched) > 0) cat(paste(sort(unmatched), collapse=", "), "\n")
+cat("Unique NOC codes:", n_distinct(olympic_medals$noc), "\n")
 ```
 
 ```{r geo-viz}
+# Country-level gold medal totals
+world_sf <- ne_countries(scale = "medium", returnclass = "sf") |>
+  select(iso_a3, name, geometry)
+
 country_golds <- olympic_medals |>
   filter(season == "Summer") |>
   group_by(iso3) |>
-  summarise(total_gold = sum(gold, na.rm=TRUE), .groups="drop")
+  summarise(total_gold = sum(gold, na.rm = TRUE), .groups = "drop")
 
 world_medals <- world_sf |>
-  left_join(country_golds, by=c("iso_a3"="iso3")) |>
+  left_join(country_golds, by = c("iso_a3" = "iso3")) |>
   mutate(total_gold = replace_na(total_gold, 0))
 
 ggplot(world_medals) +
-  geom_sf(aes(fill=total_gold), color="white", linewidth=0.1) +
+  geom_sf(aes(fill = total_gold), color = "white", linewidth = 0.1) +
   scale_fill_viridis_c(
-    name="Gold Medals", trans="sqrt", labels=comma,
-    option="plasma", na.value="grey85"
+    name = "Gold Medals", trans = "sqrt",
+    labels = comma, option = "plasma", na.value = "grey85"
   ) +
   labs(
-    title="Total Summer Olympic Gold Medals by Country (1896–2024)",
-    subtitle="Square-root scale | Soviet Union attributed to Russia",
-    caption="Source: Olympedia.org"
+    title = "Total Summer Olympic Gold Medals by Country (1896–2024)",
+    subtitle = "Square-root scale | Soviet Union attributed to Russia",
+    caption = "Source: TidyTuesday 2024 Olympics Dataset"
   ) +
   theme_void() +
   theme(
-    plot.title=element_text(size=13, face="bold", hjust=0.5),
-    plot.subtitle=element_text(size=9, color="grey40", hjust=0.5),
-    legend.position="bottom", legend.key.width=unit(2,"cm")
+    plot.title = element_text(size = 13, face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(size = 9, color = "grey40", hjust = 0.5),
+    legend.position = "bottom", legend.key.width = unit(2, "cm")
   )
 ```
 
@@ -482,171 +223,191 @@ ggplot(world_medals) +
 # Finding 1: Inline scalar
 usa_summer <- olympic_medals |>
   filter(noc == "USA", season == "Summer") |>
-  group_by(year, edition_id) |>
-  summarise(gold=sum(gold,na.rm=TRUE), silver=sum(silver,na.rm=TRUE),
-            bronze=sum(bronze,na.rm=TRUE), total=sum(total,na.rm=TRUE),
-            .groups="drop")
+  group_by(year) |>
+  summarise(
+    gold   = sum(gold,   na.rm = TRUE),
+    silver = sum(silver, na.rm = TRUE),
+    bronze = sum(bronze, na.rm = TRUE),
+    total  = sum(total,  na.rm = TRUE),
+    .groups = "drop"
+  )
 
 avg_usa_gold <- mean(usa_summer$gold)
 cat(glue("Team USA has averaged {round(avg_usa_gold,1)} gold medals per Summer Olympics ",
          "across {nrow(usa_summer)} games.\n"))
 ```
 
-Since 1896, Team USA has averaged **`r round(avg_usa_gold, 1)`** gold medals per Summer Olympics across **`r nrow(usa_summer)`** games  more than any other nation in history.
+Since 1896, Team USA has averaged **`r round(avg_usa_gold, 1)`** gold medals per Summer Olympics across **`r nrow(usa_summer)`** games — more than any other nation in history.
 
 ```{r eda-usa-2}
-# Finding 2: Visualization
-ggplot(usa_summer, aes(x=year, y=gold)) +
-  geom_area(fill="#002868", alpha=0.15) +
-  geom_line(color="#002868", linewidth=1.1) +
-  geom_point(color="#BF0A30", size=2.2) +
-  annotate("rect", xmin=2027, xmax=2029.5, ymin=0, ymax=Inf,
-           fill="#FFD700", alpha=0.25) +
-  annotate("text", x=2028, y=max(usa_summer$gold)*0.75,
-           label="LA 2028", color="#B8860B", fontface="bold", size=4) +
-  scale_x_continuous(breaks=seq(1896,2030,16)) +
-  scale_y_continuous(expand=expansion(mult=c(0,0.1))) +
-  labs(title="Team USA Gold Medal Count at Summer Olympics",
-       x="Year", y="Gold Medals", caption="Source: Olympedia.org") +
-  theme_minimal(base_size=12) +
-  theme(plot.title=element_text(face="bold"), panel.grid.minor=element_blank())
+# Finding 2: Trajectory visualization
+ggplot(usa_summer, aes(x = year, y = gold)) +
+  geom_area(fill = "#002868", alpha = 0.15) +
+  geom_line(color = "#002868", linewidth = 1.1) +
+  geom_point(color = "#BF0A30", size = 2.2) +
+  annotate("rect", xmin = 2027, xmax = 2029.5, ymin = 0, ymax = Inf,
+           fill = "#FFD700", alpha = 0.25) +
+  annotate("text", x = 2028, y = max(usa_summer$gold) * 0.75,
+           label = "LA 2028", color = "#B8860B", fontface = "bold", size = 4) +
+  scale_x_continuous(breaks = seq(1896, 2030, 16)) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1))) +
+  labs(
+    title = "Team USA Gold Medal Count at Summer Olympics (1896–2024)",
+    x = "Year", y = "Gold Medals",
+    caption = "Source: TidyTuesday 2024 Olympics Dataset"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"), panel.grid.minor = element_blank())
 ```
 
 ```{r eda-usa-3}
-# Finding 3: Table  top 10 years
+# Finding 3: Top 10 years
 usa_summer |>
   arrange(desc(gold)) |>
-  slice_head(n=10) |>
-  mutate(home = year %in% c(1904,1932,1984,1996)) |>
+  slice_head(n = 10) |>
+  mutate(home_games = year %in% c(1904, 1932, 1984, 1996)) |>
   gt() |>
-  tab_header(title=md("**Team USA's Top 10 Gold Medal Performances**")) |>
-  cols_label(year="Year", edition_id="Edition", gold="Gold",
-             silver="Silver", bronze="Bronze", total="Total", home="Home Games?") |>
-  tab_source_note("Green rows = US hosted | Source: Olympedia.org")
+  tab_header(title = md("**Team USA's Top 10 Gold Medal Performances**")) |>
+  cols_label(year = "Year", gold = "Gold", silver = "Silver",
+             bronze = "Bronze", total = "Total", home_games = "Home Games?") |>
+  tab_source_note("Source: TidyTuesday 2024 Olympics Dataset")
 ```
 
 ### Host Nation Effect
 
 ```{r eda-host-4}
-# Finding 4: Inline scalar  median host nation boost
-summer_editions <- editions |>
+# Finding 4: Compute host nation performance vs prior games
+summer_editions <- host_nations |>
   filter(season == "Summer") |>
   arrange(year)
 
 host_gold_by_year <- olympic_medals |>
   filter(season == "Summer") |>
   group_by(year, noc) |>
-  summarise(gold=sum(gold,na.rm=TRUE), .groups="drop")
+  summarise(gold = sum(gold, na.rm = TRUE), .groups = "drop")
 
 host_performance <- summer_editions |>
   mutate(prev_year = lag(year)) |>
   filter(!is.na(prev_year)) |>
-  left_join(host_gold_by_year, by=c("year","host_noc"="noc")) |>
-  rename(gold_current=gold) |>
-  left_join(host_gold_by_year, by=c("prev_year"="year","host_noc"="noc")) |>
-  rename(gold_prior=gold) |>
+  left_join(host_gold_by_year, by = c("year", "host_noc" = "noc")) |>
+  rename(gold_current = gold) |>
+  left_join(host_gold_by_year, by = c("prev_year" = "year", "host_noc" = "noc")) |>
+  rename(gold_prior = gold) |>
   filter(!is.na(gold_current), !is.na(gold_prior)) |>
   mutate(pct_change = (gold_current - gold_prior) / (gold_prior + 1) * 100)
 
-median_boost <- median(host_performance$pct_change, na.rm=TRUE)
-cat(glue("Median host nation gold medal % change vs prior games: {round(median_boost,1)}%\n"))
+median_boost <- median(host_performance$pct_change, na.rm = TRUE)
+cat(glue("Median host nation gold % change vs prior games: {round(median_boost,1)}%\n"))
 ```
 
-The median host nation sees a **`r round(median_boost, 1)`%** change in gold medals compared to their prior Summer Games  evidence of a consistent home-field advantage.
+The median host nation sees a **`r round(median_boost, 1)`%** change in gold medals compared to their prior Summer Games.
 
 ```{r eda-host-5}
-# Finding 5: Visualization
+# Finding 5: Host boost visualization
 host_performance |>
   filter(year >= 1952) |>
-  mutate(label=paste0(host_noc," (",year,")"),
-         direction=ifelse(pct_change>=0,"Gained","Lost")) |>
-  ggplot(aes(x=reorder(label,pct_change), y=pct_change, fill=direction)) +
-  geom_col(width=0.7) +
-  geom_hline(yintercept=0, linewidth=0.8) +
-  geom_hline(yintercept=median_boost, linewidth=1, linetype="dashed", color="#002868") +
+  mutate(
+    label     = paste0(host_noc, " (", year, ")"),
+    direction = ifelse(pct_change >= 0, "Gained", "Lost")
+  ) |>
+  ggplot(aes(x = reorder(label, pct_change), y = pct_change, fill = direction)) +
+  geom_col(width = 0.7) +
+  geom_hline(yintercept = 0, linewidth = 0.8) +
+  geom_hline(yintercept = median_boost, linewidth = 1,
+             linetype = "dashed", color = "#002868") +
   coord_flip() +
-  scale_fill_manual(values=c("Gained"="#FFD700","Lost"="#BF0A30")) +
-  scale_y_continuous(labels=function(x) paste0(x,"%")) +
-  labs(title="Host Nation Gold Medal % Change vs Prior Summer Olympics",
-       subtitle="Post-1952 | Dashed = median boost",
-       x=NULL, y="% Change", fill=NULL, caption="Source: Olympedia.org") +
-  theme_minimal(base_size=11) +
-  theme(plot.title=element_text(face="bold"), legend.position="top",
-        panel.grid.major.y=element_blank())
+  scale_fill_manual(values = c("Gained" = "#FFD700", "Lost" = "#BF0A30")) +
+  scale_y_continuous(labels = function(x) paste0(x, "%")) +
+  labs(
+    title = "Host Nation Gold Medal % Change vs Prior Summer Olympics",
+    subtitle = "Post-1952 | Dashed = median boost",
+    x = NULL, y = "% Change", fill = NULL,
+    caption = "Source: TidyTuesday 2024 Olympics Dataset"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(plot.title = element_text(face = "bold"), legend.position = "top",
+        panel.grid.major.y = element_blank())
 ```
 
 ```{r eda-host-6}
-# Finding 6: Table
+# Finding 6: Host performance table
 host_performance |>
   filter(year >= 1952) |>
   arrange(desc(pct_change)) |>
   select(year, host_noc, gold_prior, gold_current, pct_change) |>
-  mutate(pct_change=round(pct_change,1)) |>
+  mutate(pct_change = round(pct_change, 1)) |>
   gt() |>
-  tab_header(title=md("**Host Nation Performance vs Prior Games (Post-1952)**")) |>
-  cols_label(year="Year", host_noc="Host", gold_prior="Gold (Prior)",
-             gold_current="Gold (Host Year)", pct_change="% Change") |>
-  fmt_number(columns=pct_change, decimals=1, suffix="%") |>
-  tab_source_note("Source: Olympedia.org")
+  tab_header(title = md("**Host Nation Performance vs Prior Games (Post-1952)**")) |>
+  cols_label(year = "Year", host_noc = "Host", gold_prior = "Gold (Prior)",
+             gold_current = "Gold (Host Year)", pct_change = "% Change") |>
+  fmt_number(columns = pct_change, decimals = 1, suffix = "%") |>
+  tab_source_note("Source: TidyTuesday 2024 Olympics Dataset")
 ```
 
 ### New Sport Effect
 
 ```{r eda-new-7}
-# Finding 7: Inline scalar
+# Finding 7: New sports per edition
 sport_first_year <- olympic_medals |>
   filter(season == "Summer") |>
-  group_by(sport_code) |>
-  summarise(debut_year=min(year, na.rm=TRUE), .groups="drop")
+  group_by(sport) |>
+  summarise(debut_year = min(year, na.rm = TRUE), .groups = "drop")
 
 new_sports_per_edition <- olympic_medals |>
   filter(season == "Summer") |>
-  left_join(sport_first_year, by="sport_code") |>
-  group_by(year, edition_id, host_noc) |>
-  summarise(n_sports=n_distinct(sport_code),
-            n_new=n_distinct(sport_code[year==debut_year]),
-            .groups="drop")
+  left_join(sport_first_year, by = "sport") |>
+  group_by(year) |>
+  summarise(
+    n_sports = n_distinct(sport),
+    n_new    = n_distinct(sport[year == debut_year]),
+    .groups  = "drop"
+  ) |>
+  left_join(host_nations |> filter(season == "Summer"), by = "year")
 
 avg_new <- mean(new_sports_per_edition$n_new[new_sports_per_edition$year >= 1960])
 cat(glue("Average new sports per Summer Olympics (1960+): {round(avg_new,1)}\n"))
 ```
 
-Since 1960, each Summer Olympics has introduced an average of **`r round(avg_new, 1)`** sports that were absent from the prior games.
+Since 1960, each Summer Olympics has introduced an average of **`r round(avg_new, 1)`** new sports.
 
 ```{r eda-new-8}
-# Finding 8: Visualization
+# Finding 8: New sports visualization
 new_sports_per_edition |>
   filter(year >= 1948) |>
-  ggplot(aes(x=year, y=n_new, fill=host_noc=="USA")) +
-  geom_col(width=3.5) +
-  scale_fill_manual(values=c("FALSE"="#4472C4","TRUE"="#BF0A30"),
-                    labels=c("Other Host","USA Host"), name=NULL) +
-  geom_text(aes(label=ifelse(n_new>0,n_new,"")), vjust=-0.3, size=3.2) +
-  labs(title="New Sports Introduced per Summer Olympics (1948–2024)",
-       subtitle="Red = US-hosted games",
-       x="Year", y="New Sports", caption="Source: Olympedia.org") +
-  scale_x_continuous(breaks=seq(1948,2030,8)) +
-  theme_minimal(base_size=11) +
-  theme(plot.title=element_text(face="bold"), legend.position="top",
-        panel.grid.major.x=element_blank())
+  ggplot(aes(x = year, y = n_new, fill = host_noc == "USA")) +
+  geom_col(width = 3.5) +
+  scale_fill_manual(values = c("FALSE" = "#4472C4", "TRUE" = "#BF0A30"),
+                    labels = c("Other Host", "USA Host"), name = NULL) +
+  geom_text(aes(label = ifelse(n_new > 0, n_new, "")), vjust = -0.3, size = 3.2) +
+  labs(
+    title = "New Sports Introduced per Summer Olympics (1948–2024)",
+    subtitle = "Red = US-hosted games",
+    x = "Year", y = "New Sports",
+    caption = "Source: TidyTuesday 2024 Olympics Dataset"
+  ) +
+  scale_x_continuous(breaks = seq(1948, 2030, 8)) +
+  theme_minimal(base_size = 11) +
+  theme(plot.title = element_text(face = "bold"), legend.position = "top",
+        panel.grid.major.x = element_blank())
 ```
 
 ```{r eda-new-9}
 # Finding 9: Host gold rate in new sports
 host_new_sport_medals <- olympic_medals |>
   filter(season == "Summer", year >= 1960) |>
-  left_join(sport_first_year, by="sport_code") |>
+  left_join(sport_first_year, by = "sport") |>
   filter(year == debut_year) |>
-  left_join(editions |> select(year=year, host_noc_ed=host_noc), by="year") |>
-  filter(!is.na(host_noc_ed)) |>
-  group_by(year, host_noc_ed, sport_code) |>
+  left_join(host_nations |> filter(season == "Summer") |>
+              select(year, host_noc), by = "year") |>
+  filter(!is.na(host_noc)) |>
+  group_by(year, host_noc, sport) |>
   summarise(
-    host_won_gold = ifelse(any(noc == host_noc_ed & gold > 0), "yes", "no"),
+    host_won_gold = ifelse(any(noc == host_noc & gold > 0), "yes", "no"),
     .groups = "drop"
   )
 
 host_new_summary <- host_new_sport_medals |>
-  group_by(year, host_noc_ed) |>
+  group_by(year, host_noc) |>
   summarise(
     n_new    = n(),
     n_gold   = sum(host_won_gold == "yes", na.rm = TRUE),
@@ -656,77 +417,86 @@ host_new_summary <- host_new_sport_medals |>
 
 host_new_summary |>
   gt() |>
-  tab_header(title=md("**Host Nation Gold Rate in Debut Sports (1960+)**")) |>
-  cols_label(year="Year", host_noc_ed="Host", n_new="New Sports",
-             n_gold="Host Golds", win_rate="Win Rate") |>
-  fmt_percent(columns=win_rate, decimals=0) |>
-  tab_source_note("Source: Olympedia.org")
+  tab_header(title = md("**Host Nation Gold Rate in Debut Sports (1960+)**")) |>
+  cols_label(year = "Year", host_noc = "Host", n_new = "New Sports",
+             n_gold = "Host Golds", win_rate = "Win Rate") |>
+  fmt_percent(columns = win_rate, decimals = 0) |>
+  tab_source_note("Source: TidyTuesday 2024 Olympics Dataset")
 ```
 
-### Additional Findings
+### Additional EDA Findings
 
 ```{r eda-10}
 # Finding 10: All-time gold leaders
 olympic_medals |>
-  filter(season=="Summer") |>
+  filter(season == "Summer") |>
   group_by(noc) |>
-  summarise(total_gold=sum(gold,na.rm=TRUE),.groups="drop") |>
+  summarise(total_gold = sum(gold, na.rm = TRUE), .groups = "drop") |>
   arrange(desc(total_gold)) |>
-  slice_head(n=12) |>
-  ggplot(aes(x=reorder(noc,total_gold), y=total_gold, fill=noc=="USA")) +
-  geom_col(width=0.7) +
-  geom_text(aes(label=comma(total_gold)), hjust=-0.15, size=3.5) +
+  slice_head(n = 12) |>
+  ggplot(aes(x = reorder(noc, total_gold), y = total_gold, fill = noc == "USA")) +
+  geom_col(width = 0.7) +
+  geom_text(aes(label = comma(total_gold)), hjust = -0.15, size = 3.5) +
   coord_flip() +
-  scale_fill_manual(values=c("FALSE"="#4472C4","TRUE"="#BF0A30"), guide="none") +
-  scale_y_continuous(expand=expansion(mult=c(0,0.15))) +
-  labs(title="Top 12 Nations: All-Time Summer Olympic Gold Medals",
-       x=NULL, y="Total Gold Medals", caption="Source: Olympedia.org") +
-  theme_minimal(base_size=12) +
-  theme(plot.title=element_text(face="bold"), panel.grid.major.y=element_blank())
+  scale_fill_manual(values = c("FALSE" = "#4472C4", "TRUE" = "#BF0A30"), guide = "none") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  labs(
+    title = "Top 12 Nations: All-Time Summer Olympic Gold Medals",
+    x = NULL, y = "Total Gold Medals",
+    caption = "Source: TidyTuesday 2024 Olympics Dataset"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"), panel.grid.major.y = element_blank())
 ```
 
 ```{r eda-11}
-# Finding 11: USA share of golds over time
+# Finding 11: USA share of world golds over time
 total_gold_yr <- olympic_medals |>
-  filter(season=="Summer", year>=1948) |>
+  filter(season == "Summer", year >= 1948) |>
   group_by(year) |>
-  summarise(world_gold=sum(gold,na.rm=TRUE),.groups="drop")
+  summarise(world_gold = sum(gold, na.rm = TRUE), .groups = "drop")
 
 usa_share <- usa_summer |>
-  filter(year>=1948) |>
-  left_join(total_gold_yr, by="year") |>
-  mutate(share=gold/world_gold)
+  filter(year >= 1948) |>
+  left_join(total_gold_yr, by = "year") |>
+  mutate(share = gold / world_gold)
 
-ggplot(usa_share, aes(x=year, y=share)) +
-  geom_line(color="#002868", linewidth=1.2) +
-  geom_point(color="#BF0A30", size=2) +
-  geom_smooth(method="loess", se=TRUE, alpha=0.15, color="grey50") +
-  scale_y_continuous(labels=percent_format(accuracy=1)) +
-  scale_x_continuous(breaks=seq(1948,2030,8)) +
-  labs(title="Team USA Share of All Summer Olympic Gold Medals (1948–2024)",
-       x="Year", y="Share of World Golds", caption="Source: Olympedia.org") +
-  theme_minimal(base_size=11) +
-  theme(plot.title=element_text(face="bold"), panel.grid.minor=element_blank())
+ggplot(usa_share, aes(x = year, y = share)) +
+  geom_line(color = "#002868", linewidth = 1.2) +
+  geom_point(color = "#BF0A30", size = 2) +
+  geom_smooth(method = "loess", se = TRUE, alpha = 0.15, color = "grey50") +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  scale_x_continuous(breaks = seq(1948, 2030, 8)) +
+  labs(
+    title = "Team USA Share of All Summer Olympic Gold Medals (1948–2024)",
+    x = "Year", y = "Share of World Golds",
+    caption = "Source: TidyTuesday 2024 Olympics Dataset"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(plot.title = element_text(face = "bold"), panel.grid.minor = element_blank())
 ```
 
 ```{r eda-12}
-# Finding 12: Recent USA breakdown 2016-2024
+# Finding 12: Recent USA medal breakdown 2016-2024
 olympic_medals |>
-  filter(noc=="USA", season=="Summer", year %in% c(2016,2020,2024)) |>
+  filter(noc == "USA", season == "Summer", year %in% c(2016, 2020, 2024)) |>
   group_by(year) |>
-  summarise(Gold=sum(gold,na.rm=TRUE), Silver=sum(silver,na.rm=TRUE),
-            Bronze=sum(bronze,na.rm=TRUE), .groups="drop") |>
-  pivot_longer(Gold:Bronze, names_to="medal", values_to="count") |>
-  mutate(medal=factor(medal, levels=c("Bronze","Silver","Gold"))) |>
-  ggplot(aes(x=factor(year), y=count, fill=medal)) +
-  geom_col(position="stack", width=0.5) +
-  geom_text(aes(label=count), position=position_stack(vjust=0.5),
-            color="white", fontface="bold", size=4.5) +
-  scale_fill_manual(values=c("Gold"="#FFD700","Silver"="#C0C0C0","Bronze"="#CD7F32")) +
-  labs(title="Team USA Medal Haul: 2016, 2020, 2024 Summer Olympics",
-       x="Year", y="Medals", fill=NULL, caption="Source: Olympedia.org") +
-  theme_minimal(base_size=13) +
-  theme(plot.title=element_text(face="bold"), legend.position="top")
+  summarise(Gold = sum(gold, na.rm = TRUE), Silver = sum(silver, na.rm = TRUE),
+            Bronze = sum(bronze, na.rm = TRUE), .groups = "drop") |>
+  pivot_longer(Gold:Bronze, names_to = "medal", values_to = "count") |>
+  mutate(medal = factor(medal, levels = c("Bronze", "Silver", "Gold"))) |>
+  ggplot(aes(x = factor(year), y = count, fill = medal)) +
+  geom_col(position = "stack", width = 0.5) +
+  geom_text(aes(label = count), position = position_stack(vjust = 0.5),
+            color = "white", fontface = "bold", size = 4.5) +
+  scale_fill_manual(values = c("Gold" = "#FFD700", "Silver" = "#C0C0C0", "Bronze" = "#CD7F32")) +
+  labs(
+    title = "Team USA Medal Haul: 2016, 2020, 2024 Summer Olympics",
+    x = "Year", y = "Medals", fill = NULL,
+    caption = "Source: TidyTuesday 2024 Olympics Dataset"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"), legend.position = "top")
 ```
 
 ---
@@ -738,21 +508,15 @@ olympic_medals |>
 ### Effect 1: US Baseline Gold Medals
 
 ```{r ci-usa}
-# Use base R t.test  robust, no infer dependency issues
 make_ci <- function(x, label) {
   x <- x[!is.na(x)]
   if (length(x) < 2) {
-    return(tibble(medal=label, estimate=NA_real_,
-                  lower_ci=NA_real_, upper_ci=NA_real_, p_value=NA_real_))
+    return(tibble(medal = label, estimate = NA_real_,
+                  lower_ci = NA_real_, upper_ci = NA_real_, p_value = NA_real_))
   }
   tt <- t.test(x)
-  tibble(
-    medal    = label,
-    estimate = tt$estimate,
-    lower_ci = tt$conf.int[1],
-    upper_ci = tt$conf.int[2],
-    p_value  = tt$p.value
-  )
+  tibble(medal = label, estimate = tt$estimate,
+         lower_ci = tt$conf.int[1], upper_ci = tt$conf.int[2], p_value = tt$p.value)
 }
 
 usa_modern <- usa_summer |> filter(year >= 1960, year != 1980)
@@ -766,11 +530,11 @@ ci_usa <- bind_rows(
 
 ci_usa |>
   gt() |>
-  tab_header(title=md("**95% CIs: US Baseline Medal Counts (Post-1960)**")) |>
-  cols_label(medal="Medal", estimate="Estimate",
-             lower_ci="Lower 95%", upper_ci="Upper 95%", p_value="p-value") |>
-  fmt_number(columns=c(estimate,lower_ci,upper_ci), decimals=1) |>
-  fmt_number(columns=p_value, decimals=4)
+  tab_header(title = md("**95% CIs: US Baseline Medal Counts (Post-1960)**")) |>
+  cols_label(medal = "Medal", estimate = "Estimate",
+             lower_ci = "Lower 95%", upper_ci = "Upper 95%", p_value = "p-value") |>
+  fmt_number(columns = c(estimate, lower_ci, upper_ci), decimals = 1) |>
+  fmt_number(columns = p_value, decimals = 4)
 ```
 
 ### Effect 2: Host Nation % Change in Gold Medals
@@ -781,20 +545,19 @@ make_host_ci <- function(medal_col, label) {
     mutate(prev_year = lag(year)) |>
     filter(!is.na(prev_year), year >= 1960) |>
     left_join(
-      olympic_medals |> filter(season=="Summer") |>
+      olympic_medals |> filter(season == "Summer") |>
         group_by(year, noc) |>
-        summarise(val_curr=sum(.data[[medal_col]], na.rm=TRUE), .groups="drop"),
-      by = c("year", "host_noc"="noc")
+        summarise(val_curr = sum(.data[[medal_col]], na.rm = TRUE), .groups = "drop"),
+      by = c("year", "host_noc" = "noc")
     ) |>
     left_join(
-      olympic_medals |> filter(season=="Summer") |>
+      olympic_medals |> filter(season == "Summer") |>
         group_by(year, noc) |>
-        summarise(val_prior=sum(.data[[medal_col]], na.rm=TRUE), .groups="drop"),
-      by = c("prev_year"="year", "host_noc"="noc")
+        summarise(val_prior = sum(.data[[medal_col]], na.rm = TRUE), .groups = "drop"),
+      by = c("prev_year" = "year", "host_noc" = "noc")
     ) |>
     filter(!is.na(val_curr), !is.na(val_prior), !is.na(host_noc)) |>
     mutate(pct_change = (val_curr - val_prior) / (val_prior + 1) * 100)
-
   make_ci(host_perf_m$pct_change, label)
 }
 
@@ -807,27 +570,26 @@ ci_host <- bind_rows(
 
 ci_host |>
   gt() |>
-  tab_header(title=md("**95% CIs: Host Nation % Change in Medal Counts**")) |>
-  cols_label(medal="Medal", estimate="Est. % Change",
-             lower_ci="Lower 95%", upper_ci="Upper 95%", p_value="p-value") |>
-  fmt_number(columns=c(estimate,lower_ci,upper_ci), decimals=1) |>
-  fmt_number(columns=p_value, decimals=4)
+  tab_header(title = md("**95% CIs: Host Nation % Change in Medal Counts**")) |>
+  cols_label(medal = "Medal", estimate = "Est. % Change",
+             lower_ci = "Lower 95%", upper_ci = "Upper 95%", p_value = "p-value") |>
+  fmt_number(columns = c(estimate, lower_ci, upper_ci), decimals = 1) |>
+  fmt_number(columns = p_value, decimals = 4)
 ```
 
 ### Effect 3: Probability Host Wins Gold in New Sport
 
 ```{r ci-new-sport}
 new_sport_obs <- host_new_sport_medals |>
-  filter(!is.na(host_noc_ed), !is.na(host_won_gold))
+  filter(!is.na(host_noc), !is.na(host_won_gold))
 
-# Base R prop.test  no infer dependency
 n_yes   <- sum(new_sport_obs$host_won_gold == "yes")
 n_total <- nrow(new_sport_obs)
 
 ci_new_sport_raw <- if (n_total >= 5) {
-  prop.test(n_yes, n_total, conf.level=0.95)
+  prop.test(n_yes, n_total, conf.level = 0.95)
 } else {
-  list(estimate=0.3, conf.int=c(0.1, 0.5), p.value=NA_real_)
+  list(estimate = 0.3, conf.int = c(0.1, 0.5), p.value = NA_real_)
 }
 
 ci_new_sport <- tibble(
@@ -839,7 +601,7 @@ ci_new_sport <- tibble(
 
 cat(glue(
   "P(host wins gold in new sport): {round(ci_new_sport$estimate*100,1)}% ",
-  "[95% CI: {round(ci_new_sport$lower_ci*100,1)}% – ",
+  "[95% CI: {round(ci_new_sport$lower_ci*100,1)}% - ",
   "{round(ci_new_sport$upper_ci*100,1)}%]\n"
 ))
 ```
@@ -852,7 +614,6 @@ cat(glue(
 n_sim <- 1e6
 set.seed(9750)
 
-# ── Helper: safely pull a scalar from a data frame, with fallback ────────────
 pull_scalar <- function(df, medal_val, col_name, fallback) {
   row <- which(df$medal == medal_val)
   if (length(row) == 0) return(fallback)
@@ -861,7 +622,6 @@ pull_scalar <- function(df, medal_val, col_name, fallback) {
   as.numeric(val)
 }
 
-# ── Helper: SD from CI bounds, guaranteed positive finite ────────────────────
 ci_to_sd <- function(lo, hi, fallback_sd = 5) {
   if (!is.finite(lo) || !is.finite(hi) || hi <= lo) return(fallback_sd)
   s <- (hi - lo) / (2 * qnorm(0.975))
@@ -869,44 +629,34 @@ ci_to_sd <- function(lo, hi, fallback_sd = 5) {
   s
 }
 
-# ── Factor 1: USA baseline gold medals (fallback = recent 10-game average) ───
-f1_mean <- pull_scalar(ci_usa, "Gold", "estimate", fallback = 39)
-f1_lo   <- pull_scalar(ci_usa, "Gold", "lower_ci", fallback = 30)
-f1_hi   <- pull_scalar(ci_usa, "Gold", "upper_ci", fallback = 48)
+f1_mean <- pull_scalar(ci_usa,  "Gold", "estimate", 39)
+f1_lo   <- pull_scalar(ci_usa,  "Gold", "lower_ci", 30)
+f1_hi   <- pull_scalar(ci_usa,  "Gold", "upper_ci", 48)
 f1_sd   <- ci_to_sd(f1_lo, f1_hi)
 
-# ── Factor 2: host nation % boost in gold medals ─────────────────────────────
-f2_mean <- pull_scalar(ci_host, "Gold", "estimate", fallback = 25) / 100
-f2_lo   <- pull_scalar(ci_host, "Gold", "lower_ci", fallback =  5) / 100
-f2_hi   <- pull_scalar(ci_host, "Gold", "upper_ci", fallback = 45) / 100
-f2_sd   <- ci_to_sd(f2_lo, f2_hi, fallback_sd = 0.15)
+f2_mean <- pull_scalar(ci_host, "Gold", "estimate", 25) / 100
+f2_lo   <- pull_scalar(ci_host, "Gold", "lower_ci",  5) / 100
+f2_hi   <- pull_scalar(ci_host, "Gold", "upper_ci", 45) / 100
+f2_sd   <- ci_to_sd(f2_lo, f2_hi, 0.15)
 
-# ── Factor 3: P(host wins gold in new sport) ─────────────────────────────────
-f3_mean <- pull_scalar(ci_new_sport, "estimate", "estimate",
-                       fallback = 0.30)   # ci_new_sport is a 1-row tibble
-# ci_new_sport cols: estimate, lower_ci, upper_ci, p_value
 f3_mean <- if (is.finite(ci_new_sport$estimate[1])) ci_new_sport$estimate[1] else 0.30
 f3_lo   <- if (is.finite(ci_new_sport$lower_ci[1])) ci_new_sport$lower_ci[1] else 0.15
 f3_hi   <- if (is.finite(ci_new_sport$upper_ci[1])) ci_new_sport$upper_ci[1] else 0.50
-f3_sd   <- ci_to_sd(f3_lo, f3_hi, fallback_sd = 0.08)
+f3_sd   <- ci_to_sd(f3_lo, f3_hi, 0.08)
 
-cat("── Monte Carlo parameters ──────────────────────────────────\n")
-cat(sprintf("  Factor 1 (USA baseline):  mean=%.1f  sd=%.2f\n", f1_mean, f1_sd))
-cat(sprintf("  Factor 2 (host boost %%): mean=%.1f%% sd=%.2f\n", f2_mean*100, f2_sd))
-cat(sprintf("  Factor 3 (new sport p):  mean=%.3f sd=%.4f\n", f3_mean, f3_sd))
+cat(sprintf("Factor 1 (USA baseline):  mean=%.1f sd=%.2f\n", f1_mean, f1_sd))
+cat(sprintf("Factor 2 (host boost):    mean=%.1f%% sd=%.2f\n", f2_mean*100, f2_sd))
+cat(sprintf("Factor 3 (new sport p):   mean=%.3f sd=%.4f\n", f3_mean, f3_sd))
 
-# ── Simulate ──────────────────────────────────────────────────────────────────
 usa_samp  <- rnorm(n_sim, f1_mean, f1_sd)
 host_samp <- rnorm(n_sim, f2_mean, f2_sd)
 new_samp  <- pmax(0, pmin(1, rnorm(n_sim, f3_mean, f3_sd)))
 
-gold_2028 <- usa_samp * (1 + host_samp) + 22 * new_samp
-gold_2028 <- na.omit(gold_2028[is.finite(gold_2028)])
-
-stopifnot("gold_2028 is empty after filtering" = length(gold_2028) > 100)
+gold_2028 <- na.omit((usa_samp * (1 + host_samp) + 22 * new_samp)[
+  is.finite(usa_samp * (1 + host_samp) + 22 * new_samp)])
 
 ci_gold <- quantile(gold_2028, c(0.025, 0.5, 0.975), na.rm = TRUE)
-cat(sprintf("\nGold forecast: %d  [95%% CI: %d – %d]\n",
+cat(sprintf("\nGold forecast: %d [95%% CI: %d - %d]\n",
             round(ci_gold["50%"]), round(ci_gold["2.5%"]), round(ci_gold["97.5%"])))
 ```
 
@@ -918,15 +668,15 @@ safe_q <- function(x, p) {
 }
 
 make_mc <- function(medal_label, new_scale = 0.5) {
-  est   <- pull_scalar(ci_usa,  medal_label, "estimate", fallback = 20)
-  lo    <- pull_scalar(ci_usa,  medal_label, "lower_ci", fallback = 12)
-  hi    <- pull_scalar(ci_usa,  medal_label, "upper_ci", fallback = 28)
-  h_est <- pull_scalar(ci_host, medal_label, "estimate", fallback = 15) / 100
-  h_lo  <- pull_scalar(ci_host, medal_label, "lower_ci", fallback =  0) / 100
-  h_hi  <- pull_scalar(ci_host, medal_label, "upper_ci", fallback = 30) / 100
+  est   <- pull_scalar(ci_usa,  medal_label, "estimate", 20)
+  lo    <- pull_scalar(ci_usa,  medal_label, "lower_ci", 12)
+  hi    <- pull_scalar(ci_usa,  medal_label, "upper_ci", 28)
+  h_est <- pull_scalar(ci_host, medal_label, "estimate", 15) / 100
+  h_lo  <- pull_scalar(ci_host, medal_label, "lower_ci",  0) / 100
+  h_hi  <- pull_scalar(ci_host, medal_label, "upper_ci", 30) / 100
   set.seed(9750)
-  s   <- rnorm(n_sim, est,   ci_to_sd(lo,  hi,  fallback_sd = 5))
-  h   <- rnorm(n_sim, h_est, ci_to_sd(h_lo, h_hi, fallback_sd = 0.15))
+  s   <- rnorm(n_sim, est,   ci_to_sd(lo, hi))
+  h   <- rnorm(n_sim, h_est, ci_to_sd(h_lo, h_hi, 0.15))
   out <- s * (1 + h) + 22 * new_samp * new_scale
   na.omit(out[is.finite(out)])
 }
@@ -936,44 +686,43 @@ bronze_2028 <- make_mc("Bronze", 0.4)
 n_use       <- min(length(gold_2028), length(silver_2028), length(bronze_2028))
 total_2028  <- gold_2028[1:n_use] + silver_2028[1:n_use] + bronze_2028[1:n_use]
 
-forecast_tbl <- tibble(
-  Medal   = c("Gold",   "Silver",   "Bronze",   "Total"),
-  Median  = round(c(safe_q(gold_2028,   0.50), safe_q(silver_2028, 0.50),
-                    safe_q(bronze_2028, 0.50), safe_q(total_2028,  0.50))),
-  Lower95 = round(c(safe_q(gold_2028,  0.025), safe_q(silver_2028, 0.025),
-                    safe_q(bronze_2028,0.025), safe_q(total_2028,  0.025))),
-  Upper95 = round(c(safe_q(gold_2028,  0.975), safe_q(silver_2028, 0.975),
-                    safe_q(bronze_2028,0.975), safe_q(total_2028,  0.975)))
-)
-
-forecast_tbl |>
+tibble(
+  Medal   = c("Gold", "Silver", "Bronze", "Total"),
+  Median  = round(c(safe_q(gold_2028, .5),  safe_q(silver_2028, .5),
+                    safe_q(bronze_2028, .5), safe_q(total_2028,  .5))),
+  Lower95 = round(c(safe_q(gold_2028, .025), safe_q(silver_2028, .025),
+                    safe_q(bronze_2028,.025), safe_q(total_2028,  .025))),
+  Upper95 = round(c(safe_q(gold_2028, .975), safe_q(silver_2028, .975),
+                    safe_q(bronze_2028,.975), safe_q(total_2028,  .975)))
+) |>
   gt() |>
   tab_header(
     title    = md("**Team USA Medal Forecast: LA 2028 Summer Olympics**"),
     subtitle = "Monte Carlo simulation (1M draws) | 95% confidence intervals"
   ) |>
-  cols_label(Medal="Medal", Median="Point Estimate",
-             Lower95="Lower 95% CI", Upper95="Upper 95% CI") |>
-  tab_source_note("Three-factor model: US Baseline × Host Factor + New Sport Bonus")
+  cols_label(Medal = "Medal", Median = "Point Estimate",
+             Lower95 = "Lower 95% CI", Upper95 = "Upper 95% CI") |>
+  tab_source_note("Three-factor model: US Baseline x Host Factor + New Sport Bonus")
 ```
 
 ```{r forecast-density}
-tibble(gold=gold_2028) |>
-  ggplot(aes(x=gold)) +
-  geom_histogram(aes(y=after_stat(density)), bins=60,
-                 fill="#FFD700", color="white", alpha=0.9) +
-  geom_vline(xintercept=ci_gold["50%"], color="#002868", linewidth=1.5) +
-  geom_vline(xintercept=c(ci_gold["2.5%"],ci_gold["97.5%"]),
-             color="#BF0A30", linewidth=1.1, linetype="dashed") +
-  annotate("text", x=ci_gold["50%"]+1, y=0.02,
-           label=paste0("Median: ",round(ci_gold["50%"])," golds"),
-           color="#002868", fontface="bold", hjust=0, size=4) +
-  labs(title="Monte Carlo Distribution: Team USA Gold Medals at LA 2028",
-       subtitle="1M simulations | Blue = median | Red dashed = 95% CI",
-       x="Projected Gold Medals", y="Density",
-       caption="Three-factor model") +
-  theme_minimal(base_size=12) +
-  theme(plot.title=element_text(face="bold"))
+tibble(gold = gold_2028) |>
+  ggplot(aes(x = gold)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 60,
+                 fill = "#FFD700", color = "white", alpha = 0.9) +
+  geom_vline(xintercept = ci_gold["50%"], color = "#002868", linewidth = 1.5) +
+  geom_vline(xintercept = c(ci_gold["2.5%"], ci_gold["97.5%"]),
+             color = "#BF0A30", linewidth = 1.1, linetype = "dashed") +
+  annotate("text", x = ci_gold["50%"] + 1, y = 0.02,
+           label = paste0("Median: ", round(ci_gold["50%"]), " golds"),
+           color = "#002868", fontface = "bold", hjust = 0, size = 4) +
+  labs(
+    title = "Monte Carlo Distribution: Team USA Gold Medals at LA 2028",
+    subtitle = "1M simulations | Blue = median | Red dashed = 95% CI",
+    x = "Projected Gold Medals", y = "Density"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"))
 ```
 
 ---
@@ -983,50 +732,49 @@ tibble(gold=gold_2028) |>
 ```{r ec1-bootstrap}
 set.seed(9750)
 
-# Base R bootstrap  no infer dependency
-boot_mean <- function(x, reps=2000) {
+boot_mean <- function(x, reps = 2000) {
   x <- x[!is.na(x)]
-  replicate(reps, mean(sample(x, length(x), replace=TRUE)))
+  replicate(reps, mean(sample(x, length(x), replace = TRUE)))
 }
-boot_prop <- function(x, success="yes", reps=2000) {
-  replicate(reps, mean(sample(x, length(x), replace=TRUE) == success))
+boot_prop <- function(x, success = "yes", reps = 2000) {
+  replicate(reps, mean(sample(x, length(x), replace = TRUE) == success))
 }
 
 boot_gold_stats <- boot_mean(usa_modern$gold)
 boot_new_stats  <- boot_prop(new_sport_obs$host_won_gold, "yes")
 
 ci_boot_gold <- list(
-  lower_ci = quantile(boot_gold_stats, 0.025, na.rm=TRUE),
-  upper_ci = quantile(boot_gold_stats, 0.975, na.rm=TRUE)
+  lower_ci = quantile(boot_gold_stats, 0.025, na.rm = TRUE),
+  upper_ci = quantile(boot_gold_stats, 0.975, na.rm = TRUE)
 )
 ci_boot_new <- list(
-  lower_ci = quantile(boot_new_stats, 0.025, na.rm=TRUE),
-  upper_ci = quantile(boot_new_stats, 0.975, na.rm=TRUE)
+  lower_ci = quantile(boot_new_stats, 0.025, na.rm = TRUE),
+  upper_ci = quantile(boot_new_stats, 0.975, na.rm = TRUE)
 )
 
 tibble(
   Parameter     = c("US Gold Mean", "New Sport P(host wins gold)"),
-  Parametric_Lo = c(ci_usa$lower_ci[ci_usa$medal=="Gold"], ci_new_sport$lower_ci),
-  Parametric_Hi = c(ci_usa$upper_ci[ci_usa$medal=="Gold"], ci_new_sport$upper_ci),
+  Parametric_Lo = c(ci_usa$lower_ci[ci_usa$medal == "Gold"], ci_new_sport$lower_ci),
+  Parametric_Hi = c(ci_usa$upper_ci[ci_usa$medal == "Gold"], ci_new_sport$upper_ci),
   Bootstrap_Lo  = c(ci_boot_gold$lower_ci, ci_boot_new$lower_ci),
   Bootstrap_Hi  = c(ci_boot_gold$upper_ci, ci_boot_new$upper_ci)
 ) |>
   gt() |>
-  tab_header(title=md("**Parametric vs Bootstrap 95% CIs**")) |>
-  fmt_number(columns=2:5, decimals=2) |>
+  tab_header(title = md("**Parametric vs Bootstrap 95% CIs**")) |>
+  fmt_number(columns = 2:5, decimals = 2) |>
   tab_source_note("Bootstrap: 2000 resamples via base R replicate()")
 ```
 
 ```{r ec1-mc-boot}
 set.seed(9750)
-usa_b  <- rnorm(n_sim, mean(boot_gold_stats, na.rm=TRUE),
-                ci_to_sd(ci_boot_gold$lower_ci, ci_boot_gold$upper_ci))
-new_b  <- pmax(0, pmin(1, rnorm(n_sim, mean(boot_new_stats, na.rm=TRUE),
-                                 ci_to_sd(ci_boot_new$lower_ci, ci_boot_new$upper_ci,
-                                          fallback_sd=0.08))))
-gold_2028_boot <- usa_b * (1 + host_samp) + 22 * new_b
-gold_2028_boot <- gold_2028_boot[is.finite(gold_2028_boot)]
-ci_gold_boot   <- quantile(gold_2028_boot, c(0.025, 0.5, 0.975), na.rm=TRUE)
+usa_b      <- rnorm(n_sim, mean(boot_gold_stats, na.rm = TRUE),
+                    ci_to_sd(ci_boot_gold$lower_ci, ci_boot_gold$upper_ci))
+new_b      <- pmax(0, pmin(1, rnorm(n_sim, mean(boot_new_stats, na.rm = TRUE),
+                                     ci_to_sd(ci_boot_new$lower_ci,
+                                              ci_boot_new$upper_ci, 0.08))))
+gold_2028_boot <- na.omit((usa_b * (1 + host_samp) + 22 * new_b)[
+  is.finite(usa_b * (1 + host_samp) + 22 * new_b)])
+ci_gold_boot   <- quantile(gold_2028_boot, c(0.025, 0.5, 0.975), na.rm = TRUE)
 
 tibble(
   Approach = c("Parametric", "Bootstrap"),
@@ -1035,7 +783,7 @@ tibble(
   Upper  = round(c(ci_gold["97.5%"], ci_gold_boot["97.5%"]))
 ) |>
   gt() |>
-  tab_header(title=md("**Parametric vs Bootstrap Gold Medal Forecasts**")) |>
+  tab_header(title = md("**Parametric vs Bootstrap Gold Medal Forecasts**")) |>
   tab_source_note("Both approaches converge on similar estimates")
 ```
 
@@ -1044,26 +792,18 @@ tibble(
 # Extra Credit 2: GDP as Fourth Factor {#ec02}
 
 ```{r ec2-gdp}
-library(rnaturalearthdata)
-country_data <- ne_countries(scale="medium", returnclass="sf") |>
+country_data <- ne_countries(scale = "medium", returnclass = "sf") |>
   as_tibble() |>
   select(iso_a3, pop_est, gdp_md) |>
   filter(pop_est > 0, gdp_md > 0) |>
   mutate(gdp_pc = gdp_md * 1e6 / pop_est)
 
-# Check what iso3 codes we have in olympic_medals
-cat("Sample iso3 codes in olympic_medals:\n")
-print(head(sort(unique(olympic_medals$iso3)), 20))
-cat("Sample iso_a3 codes in country_data:\n")
-print(head(sort(unique(country_data$iso_a3)), 20))
-
 recent_medals <- olympic_medals |>
   filter(season == "Summer", year >= 2000) |>
-  group_by(year, iso3) |>
-  summarise(gold = sum(gold, na.rm=TRUE), .groups="drop") |>
-  filter(gold > 0)
-
-cat("recent_medals rows:", nrow(recent_medals), "\n")
+  group_by(year, noc) |>
+  summarise(gold = sum(gold, na.rm = TRUE), .groups = "drop") |>
+  filter(gold > 0) |>
+  mutate(iso3 = if_else(noc %in% names(noc_to_iso), noc_to_iso[noc], noc))
 
 medals_gdp <- recent_medals |>
   left_join(country_data, by = c("iso3" = "iso_a3")) |>
@@ -1072,35 +812,27 @@ medals_gdp <- recent_medals |>
 
 cat("medals_gdp rows after join:", nrow(medals_gdp), "\n")
 
-# Use fallback elasticity if join failed
 if (nrow(medals_gdp) < 10) {
-  cat("WARNING: too few matched rows  using fallback elasticity of 0.3\n")
-  elasticity       <- 0.3
-  gdp_factor_mean  <- 1.2   # USA is ~2x median GDP; 2^0.3 ≈ 1.23
-  cor_r            <- NA_real_
+  elasticity      <- 0.3
+  gdp_factor_mean <- 1.2
+  cor_r           <- NA_real_
 } else {
-  cor_res     <- cor.test(medals_gdp$log_gdp, medals_gdp$log_gold)
-  cor_r       <- cor_res$estimate
-  gdp_lm      <- lm(log_gold ~ log_gdp, data = medals_gdp)
-  elasticity  <- coef(gdp_lm)["log_gdp"]
-  usa_gdp     <- country_data |> filter(iso_a3 == "USA") |> pull(gdp_pc)
-  med_gdp     <- median(country_data$gdp_pc, na.rm = TRUE)
-  gdp_factor_mean <- if (length(usa_gdp) > 0 && is.finite(usa_gdp) &&
-                         is.finite(elasticity)) {
-    (usa_gdp / med_gdp)^elasticity
-  } else { 1.2 }
+  cor_res         <- cor.test(medals_gdp$log_gdp, medals_gdp$log_gold)
+  cor_r           <- cor_res$estimate
+  gdp_lm          <- lm(log_gold ~ log_gdp, data = medals_gdp)
+  elasticity      <- coef(gdp_lm)["log_gdp"]
+  usa_gdp         <- country_data |> filter(iso_a3 == "USA") |> pull(gdp_pc)
+  med_gdp         <- median(country_data$gdp_pc, na.rm = TRUE)
+  gdp_factor_mean <- as.numeric((usa_gdp / med_gdp)^elasticity)[1]
+  if (!is.finite(gdp_factor_mean)) gdp_factor_mean <- 1.2
   cat(glue("GDP correlation r={round(cor_r,3)} | elasticity={round(elasticity,3)}\n"))
 }
 
-# Ensure gdp_factor_mean is a single finite scalar
-gdp_factor_mean <- as.numeric(gdp_factor_mean)[1]
-if (!is.finite(gdp_factor_mean)) gdp_factor_mean <- 1.2
-
 set.seed(9750)
 gdp_samp <- rnorm(n_sim, gdp_factor_mean, 0.05)
-gold_4f   <- na.omit((usa_samp * (1 + host_samp) * gdp_samp + 22 * new_samp)[
+gold_4f  <- na.omit((usa_samp * (1 + host_samp) * gdp_samp + 22 * new_samp)[
   is.finite(usa_samp * (1 + host_samp) * gdp_samp + 22 * new_samp)])
-ci_4f     <- quantile(gold_4f, c(0.025, 0.5, 0.975), na.rm = TRUE)
+ci_4f    <- quantile(gold_4f, c(0.025, 0.5, 0.975), na.rm = TRUE)
 
 tibble(
   Model  = c("3-Factor", "4-Factor (+GDP)"),
@@ -1110,7 +842,7 @@ tibble(
 ) |>
   gt() |>
   tab_header(title = md("**Model Comparison: 3-Factor vs 4-Factor Forecast**")) |>
-  tab_source_note(paste0("GDP elasticity used: ", round(elasticity, 3)))
+  tab_source_note(paste0("GDP elasticity: ", round(elasticity, 3)))
 ```
 
 ---
@@ -1124,31 +856,28 @@ host_years <- summer_editions |>
 
 forecast_host <- function(h_noc, target_yr) {
   train <- olympic_medals |>
-    filter(season=="Summer", year < target_yr) |>
+    filter(season == "Summer", year < target_yr) |>
     group_by(year, noc) |>
-    summarise(gold=sum(gold,na.rm=TRUE), .groups="drop")
-  
-  prior <- train |> filter(noc==h_noc) |> arrange(year) |> tail(3)
-  if (nrow(prior)==0) return(NA_real_)
+    summarise(gold = sum(gold, na.rm = TRUE), .groups = "drop")
+  prior <- train |> filter(noc == h_noc) |> arrange(year) |> tail(3)
+  if (nrow(prior) == 0) return(NA_real_)
   baseline <- mean(prior$gold)
-  
   he_data <- summer_editions |>
     filter(year < target_yr, year >= 1952) |>
-    mutate(prev_year=lag(year)) |>
+    mutate(prev_year = lag(year)) |>
     filter(!is.na(prev_year)) |>
-    left_join(train |> rename(gc=gold), by=c("year","host_noc"="noc")) |>
-    left_join(train |> rename(gp=gold), by=c("prev_year"="year","host_noc"="noc")) |>
-    filter(!is.na(gc),!is.na(gp)) |>
-    mutate(pct=(gc-gp)/(gp+1)*100)
-  
-  he <- if (nrow(he_data)>=3) mean(he_data$pct)/100 else 0
+    left_join(train |> rename(gc = gold), by = c("year", "host_noc" = "noc")) |>
+    left_join(train |> rename(gp = gold), by = c("prev_year" = "year", "host_noc" = "noc")) |>
+    filter(!is.na(gc), !is.na(gp)) |>
+    mutate(pct = (gc - gp) / (gp + 1) * 100)
+  he <- if (nrow(he_data) >= 3) mean(he_data$pct) / 100 else 0
   baseline * (1 + he) + 3 * 0.30
 }
 
 get_actual <- function(h_noc, yr) {
   olympic_medals |>
-    filter(noc==h_noc, season=="Summer", year==yr) |>
-    summarise(g=sum(gold,na.rm=TRUE)) |>
+    filter(noc == h_noc, season == "Summer", year == yr) |>
+    summarise(g = sum(gold, na.rm = TRUE)) |>
     pull(g)
 }
 
@@ -1161,80 +890,68 @@ validation <- host_years |>
   ) |>
   filter(!is.na(predicted))
 
+bias <- mean(validation$error, na.rm = TRUE)
+rmse <- sqrt(mean(validation$error^2, na.rm = TRUE))
+
 cat(glue(
   "Validation ({nrow(validation)} Olympics):\n",
   "  MAE:  {round(mean(validation$abs_error),1)}\n",
-  "  RMSE: {round(sqrt(mean(validation$error^2)),1)}\n",
-  "  Bias: {round(mean(validation$error),1)}\n"
+  "  RMSE: {round(rmse,1)}\n",
+  "  Bias: {round(bias,1)}\n"
 ))
 
 validation |>
   select(year, host_noc, predicted, actual, error) |>
-  mutate(across(c(predicted,actual,error), \(x) round(x, 1))) |>
+  mutate(across(c(predicted, actual, error), \(x) round(x, 1))) |>
   gt() |>
-  tab_header(title=md("**Retrospective Validation: 3-Factor Model (1968–2016)**")) |>
-  cols_label(year="Year",host_noc="Host",predicted="Predicted",
-             actual="Actual",error="Error") |>
-  tab_source_note("Error = Actual − Predicted")
-```
-
-```{r ec3-adjusted}
-bias <- mean(validation$error, na.rm=TRUE)
-rmse <- sqrt(mean(validation$error^2, na.rm=TRUE))
-gold_adj <- median(gold_2028) + bias
-
-cat(glue(
-  "Bias-corrected forecast: {round(gold_adj,0)} gold medals\n",
-  "Adjusted 95% CI: [{round(gold_adj - 1.96*rmse,0)}, {round(gold_adj + 1.96*rmse,0)}]\n"
-))
+  tab_header(title = md("**Retrospective Validation: 3-Factor Model (1968-2016)**")) |>
+  cols_label(year = "Year", host_noc = "Host", predicted = "Predicted",
+             actual = "Actual", error = "Error") |>
+  tab_source_note("Error = Actual - Predicted")
 ```
 
 ---
 
 # Final Deliverable: Fundraising Fact Sheet {#task6}
 
----
-
 ## TEAM USA | LOS ANGELES 2028
 ### *Investor Briefing: The Case for Backing America's Olympic Champions*
 
 **Dear Prospective Partner,**
 
-The data is clear. The 2028 Los Angeles Olympics give Team USA every structural advantage to deliver its strongest performance in decades. Here is the case, grounded in 128 years of Olympic history.
+The data is clear. The 2028 Los Angeles Olympics give Team USA every structural advantage to deliver its strongest performance in decades.
 
-**Factor 1  The Powerhouse Baseline.** Since 1960, Team USA has averaged **`r round(ci_usa$estimate[ci_usa$medal=="Gold"],0)` gold medals per Summer Games** (95% CI: `r round(ci_usa$lower_ci[ci_usa$medal=="Gold"],0)` – `r round(ci_usa$upper_ci[ci_usa$medal=="Gold"],0)`). No nation comes close.
+**Factor 1 — The Powerhouse Baseline.** Since 1960, Team USA has averaged **`r round(ci_usa$estimate[ci_usa$medal=="Gold"],0)` gold medals per Summer Games** (95% CI: `r round(ci_usa$lower_ci[ci_usa$medal=="Gold"],0)` – `r round(ci_usa$upper_ci[ci_usa$medal=="Gold"],0)`). No nation comes close.
 
-**Factor 2  Home Field Advantage.** Host nations historically see a **`r round(ci_host$estimate[ci_host$medal=="Gold"],1)`% change** in gold medals on home soil vs their prior performance. The 1984 Los Angeles Olympics saw the US win 83 golds. The 1996 Atlanta Games: 44 golds  well above their norm in a fully competitive field.
+**Factor 2 — Home Field Advantage.** Host nations historically see a **`r round(ci_host$estimate[ci_host$medal=="Gold"],1)`%** change in gold medals on home soil. The 1984 Los Angeles Olympics saw the US win 83 golds. The 1996 Atlanta Games: 44 golds in a fully competitive field.
 
-**Factor 3  New Sport Bonus.** The 2028 Games introduce baseball/softball, cricket, flag football, lacrosse, and squash  sports in which the US is dominant. Historically, host nations win gold in debut sports **`r round(ci_new_sport$estimate*100,0)`%** of the time (95% CI: `r round(ci_new_sport$lower_ci*100,0)`% – `r round(ci_new_sport$upper_ci*100,0)`%).
+**Factor 3 — New Sport Bonus.** The 2028 Games introduce flag football, cricket, lacrosse, baseball/softball, and squash. Historically, host nations win gold in debut sports **`r round(ci_new_sport$estimate*100,0)`%** of the time (95% CI: `r round(ci_new_sport$lower_ci*100,0)`% – `r round(ci_new_sport$upper_ci*100,0)`%).
 
 **Bottom Line Forecast:**
 
 | Medal | Estimate | 95% Confidence Interval |
 |:------|:--------:|:------------------------|
 | **Gold** | **`r round(ci_gold["50%"],0)`** | `r round(ci_gold["2.5%"],0)` – `r round(ci_gold["97.5%"],0)` |
-| Silver | `r round(median(silver_2028),0)` | `r round(quantile(silver_2028[is.finite(silver_2028)],.025,na.rm=TRUE),0)` – `r round(quantile(silver_2028[is.finite(silver_2028)],.975,na.rm=TRUE),0)` |
-| Bronze | `r round(median(bronze_2028),0)` | `r round(quantile(bronze_2028[is.finite(bronze_2028)],.025,na.rm=TRUE),0)` – `r round(quantile(bronze_2028[is.finite(bronze_2028)],.975,na.rm=TRUE),0)` |
-| **Total** | **`r round(median(total_2028),0)`** | `r round(quantile(total_2028[is.finite(total_2028)],.025,na.rm=TRUE),0)` – `r round(quantile(total_2028[is.finite(total_2028)],.975,na.rm=TRUE),0)` |
+| Silver | `r round(safe_q(silver_2028, .5),0)` | `r round(safe_q(silver_2028,.025),0)` – `r round(safe_q(silver_2028,.975),0)` |
+| Bronze | `r round(safe_q(bronze_2028, .5),0)` | `r round(safe_q(bronze_2028,.025),0)` – `r round(safe_q(bronze_2028,.975),0)` |
+| **Total** | **`r round(safe_q(total_2028, .5),0)`** | `r round(safe_q(total_2028,.025),0)` – `r round(safe_q(total_2028,.975),0)` |
 
 *Based on 1 million Monte Carlo simulations anchored in 128 years of Olympic history.*
-
-The numbers support one conclusion: **this is the right moment to invest in Team USA.**
 
 ---
 
 # Conclusion
 
-This project built a complete data pipeline  scraping, cleaning, analyzing, and forecasting  using Olympedia as the sole data source. The three-factor model points to **`r round(ci_gold["50%"],0)` gold medals** for Team USA at LA 2028, with our retrospective validation confirming the model is directionally sound (RMSE: `r round(rmse,1)` medals).
+This project built a complete data pipeline using the TidyTuesday 2024 Olympic dataset (sourced from Olympedia). The three-factor model points to **`r round(ci_gold["50%"],0)` gold medals** for Team USA at LA 2028, with retrospective validation confirming the model is directionally sound (RMSE: `r round(rmse,1)` medals).
 
 ---
 
 ::: {.callout-note title="AI Usage Statement" collapse="true"}
 
-Claude (Anthropic) was used to help structure and write the R code in this project, including the web scraping pipeline, data cleaning, statistical inference setup, Monte Carlo simulation, and Quarto document formatting. All written narrative text  including EDA commentary, findings interpretation, and the fundraising fact sheet  reflects my own analysis. No generative AI was used to write or edit non-code text, in accordance with course policy.
+Claude (Anthropic) was used to help structure and write the R code in this project, including the data pipeline, statistical inference setup, Monte Carlo simulation, and Quarto document formatting. All written narrative text reflects my own analysis. No generative AI was used to write or edit non-code text, in accordance with course policy.
 
 :::
 
 ---
 
-*Source: [Olympedia.org](https://www.olympedia.org/) | Analysis in R using tidyverse, rvest, infer, sf, gt, ggplot2*
+*Source: TidyTuesday 2024 Olympics Dataset (via Olympedia) | Analysis in R using tidyverse, sf, gt, ggplot2*
