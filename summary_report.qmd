@@ -186,7 +186,7 @@ The treatment gap is not a mystery. It has an address. It earns less than \$35,0
 
 *Individual technical reports covering data acquisition, code, exploratory analysis, and full statistical methodology for each specific question are linked below:*
 
-- [SQ1: Age x Income & Mental Health Burden - Dhwanika Narang](individual_report.html)
-- [SQ2: Therapist-to-Patient Ratio & Platform Growth - Felisita Cheung](individual_report_fc.html)
-- [SQ3: Race x Age & Depression Rates - Helly Harshad Shah](individual_report_hs.html)
-- [SQ4: Rural vs. Urban Mental Health Burden - Khushwant Khatri](individual_report_kk.html)
+- [SQ1: Age x Income & Mental Health Burden - Dhwanika Narang](https://dhwanikan.github.io/STA9750-2026-SPRING/individual_report.html)
+- [SQ2: Therapist-to-Patient Ratio & Platform Growth - Felisita Cheung](https://felisita101.github.io/STA9750-2026-SPRING/individual_report.html)
+- [SQ3: Race x Age & Depression Rates - Helly Harshad Shah](https://helly101-1.github.io/STA9750-2026-SPRING/individual_report.html)
+- [SQ4: Rural vs. Urban Mental Health Burden - Khushwant Khatri](https://khushwant-khatri590.github.io/STA9750-2026-SPRING/individual_report.html)
