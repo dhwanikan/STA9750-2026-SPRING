@@ -6,7 +6,7 @@ author:
   - name: Helly Harshad Shah
   - name: Khushwant Khatri
   - name: Felisita Cheung
-date: "21st May 2026"
+date: "May 21, 2026"
 format:
   html:
     toc: true
